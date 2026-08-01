@@ -30,12 +30,11 @@ Open two windows: [http://127.0.0.1:3000/ems](http://127.0.0.1:3000/ems) and [ht
 
 ## Screenshots 
 #### 1. EMS - new patient card
+<img width="1505" height="784" alt="01-ems-incoming" src="https://github.com/user-attachments/assets/32269095-96a4-430e-a4ae-a58f4459fdf4" />
 
 
 #### 2. Hospital — Multi-case queue
-
-
-#### 3. Hospital — Accept + prep tasks
+<img width="1508" height="775" alt="02-hospital-queue" src="https://github.com/user-attachments/assets/4d9fb822-51bd-48bf-b678-716ac7afe01a" />
 
 
 ## Provenance
