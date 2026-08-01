@@ -45,6 +45,37 @@ export const EMPTY_TRAUMA_CARD: TraumaCard = {
   etaCapturedAt: null,
 };
 
+/** Demo script — motorcycle collision handoff. */
+export const DEMO_TRAUMA_CARD: TraumaCard = {
+  age: 27,
+  sex: "female",
+  mechanism: "Motorcycle collision",
+  vitals: {
+    bpSystolic: 92,
+    bpDiastolic: 60,
+    heartRate: 128,
+    gcs: 13,
+  },
+  injury: "Suspected left femur fracture",
+  allergy: "PENICILLIN",
+  anticoagulants: "None reported",
+  bloodType: null,
+  lastOralIntake: null,
+  emergencyContact: null,
+  etaMinutes: 6,
+  etaCapturedAt: null,
+};
+
+export type ActiveHandoff = {
+  id: string;
+  card: TraumaCard;
+  transmittedAt: string;
+  mode: "medplum" | "local";
+  serviceRequestId?: string;
+  encounterId?: string;
+  patientId?: string;
+};
+
 const MISSING_CHECKS: { key: keyof TraumaCard; label: string }[] = [
   { key: "bloodType", label: "Blood type" },
   { key: "lastOralIntake", label: "Last oral intake" },

@@ -2,11 +2,14 @@
 
 import { AppChrome } from "@/components/Providers";
 import {
+  DEMO_TRAUMA_CARD,
   EMPTY_TRAUMA_CARD,
   formatBp,
   flagBp,
   flagHr,
   getMissingFields,
+  patientLine,
+  type ActiveHandoff,
   type TraumaCard,
 } from "@/lib/trauma";
 import { useState } from "react";
@@ -31,18 +34,25 @@ function TraumaCardView({ card }: { card: TraumaCard }) {
   return (
     <section className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-5">
       <div className="flex items-start justify-between gap-4 border-b border-zinc-800 pb-4">
-        <h2 className="text-sm font-semibold uppercase tracking-[0.15em] text-amber-400/95">
-          Incoming trauma
-        </h2>
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-[0.15em] text-amber-400/95">
+            Incoming trauma
+          </h2>
+          {hasAny && (
+            <p className="mt-1 text-sm text-zinc-400">{patientLine(card)}</p>
+          )}
+        </div>
         <p className="font-mono text-sm text-zinc-300">
-          ETA {card.etaMinutes != null ? `${String(card.etaMinutes).padStart(2, "0")}:00` : "—"}
+          ETA{" "}
+          {card.etaMinutes != null
+            ? `${String(card.etaMinutes).padStart(2, "0")}:00`
+            : "—"}
         </p>
       </div>
 
       {!hasAny ? (
         <p className="mt-6 text-sm text-zinc-500">
-          Waiting for voice handoff… Speak a trauma report to populate this card
-          (Deepgram in Phase 4).
+          Load the demo handoff (or use voice in Phase 4), then Transmit.
         </p>
       ) : (
         <dl className="mt-4 space-y-2.5 font-mono text-sm">
@@ -81,7 +91,7 @@ function TraumaCardView({ card }: { card: TraumaCard }) {
         </dl>
       )}
 
-      {missing.length > 0 && (
+      {hasAny && missing.length > 0 && (
         <div className="mt-6 border-t border-zinc-800 pt-4">
           <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
             Missing
@@ -98,13 +108,63 @@ function TraumaCardView({ card }: { card: TraumaCard }) {
 }
 
 export default function EmsPage() {
-  const [card] = useState<TraumaCard>(EMPTY_TRAUMA_CARD);
+  const [card, setCard] = useState<TraumaCard>(EMPTY_TRAUMA_CARD);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [lastHandoff, setLastHandoff] = useState<ActiveHandoff | null>(null);
+
+  const hasData =
+    card.age != null || card.mechanism || card.vitals.bpSystolic != null;
+
+  async function transmit() {
+    setBusy(true);
+    setStatus(null);
+    try {
+      const res = await fetch("/api/handoff", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ card }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        mode?: string;
+        handoff?: ActiveHandoff;
+        warning?: string;
+        error?: string;
+      };
+      if (!res.ok || data.error) {
+        setStatus(data.error ?? `Transmit failed (${res.status})`);
+        return;
+      }
+      setLastHandoff(data.handoff ?? null);
+      setStatus(
+        data.mode === "medplum"
+          ? `Transmitted to Central Hospital (FHIR${data.handoff?.serviceRequestId ? ` · ServiceRequest/${data.handoff.serviceRequestId}` : ""}).`
+          : `Transmitted (local store). ${data.warning ?? ""}`,
+      );
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Transmit failed");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <AppChrome role="EMS">
       <TraumaCardView card={card} />
 
       <div className="mt-6 flex flex-wrap gap-3">
+        <button
+          type="button"
+          onClick={() => {
+            setCard({ ...DEMO_TRAUMA_CARD, etaCapturedAt: new Date().toISOString() });
+            setStatus(null);
+            setLastHandoff(null);
+          }}
+          className="rounded-md bg-zinc-800 px-4 py-2.5 text-sm font-medium text-zinc-100 hover:bg-zinc-700"
+        >
+          Load demo handoff
+        </button>
         <button
           type="button"
           disabled
@@ -115,16 +175,32 @@ export default function EmsPage() {
         </button>
         <button
           type="button"
-          disabled
-          className="cursor-not-allowed rounded-md border border-zinc-700 px-4 py-2.5 text-sm font-medium text-zinc-500"
-          title="Phase 2"
+          disabled={!hasData || busy}
+          onClick={transmit}
+          className="rounded-md border border-teal-600/80 bg-teal-700/30 px-4 py-2.5 text-sm font-medium text-teal-100 enabled:hover:bg-teal-700/50 disabled:cursor-not-allowed disabled:border-zinc-700 disabled:bg-transparent disabled:text-zinc-500"
         >
-          Transmit to Central Hospital
+          {busy ? "Transmitting…" : "Transmit to Central Hospital"}
         </button>
       </div>
 
+      {status && (
+        <p className="mt-4 text-sm text-teal-300/90" role="status">
+          {status}
+        </p>
+      )}
+      {lastHandoff && (
+        <p className="mt-1 font-mono text-xs text-zinc-500">
+          id {lastHandoff.id} · {lastHandoff.mode} · {lastHandoff.transmittedAt}
+        </p>
+      )}
+
       <p className="mt-8 text-xs text-zinc-600">
-        Phase 1 shell — Medplum connection badge above. Voice + Transmit come next.
+        Phase 2 — one Transmit writes the FHIR handoff packet (or local fallback).
+        Open{" "}
+        <a href="/hospital" className="text-teal-500/80 underline-offset-2 hover:underline">
+          /hospital
+        </a>{" "}
+        in another tab.
       </p>
     </AppChrome>
   );
