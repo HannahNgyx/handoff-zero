@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@deepgram/react": "^0.1.0",
     "@medplum/core": "^5.1.27",
     "@medplum/fhirtypes": "^5.1.27",
     "@medplum/react": "^5.1.27",

@@ -11,6 +11,7 @@ import {
   writeOralIntakeObservation,
 } from "@/lib/fhir/handoff";
 import {
+  applyHandoffText,
   DEMO_TRAUMA_CARD,
   EMPTY_TRAUMA_CARD,
   formatBp,
@@ -154,6 +155,7 @@ function EmsContent() {
   const [lastHandoff, setLastHandoff] = useState<ActiveHandoff | null>(null);
   const [injectMessage, setInjectMessage] = useState<string | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
+  const [reportText, setReportText] = useState("");
   const wroteOralRef = useRef<string | null>(null);
   const handoffRef = useRef<ActiveHandoff | null>(null);
   const patchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -240,10 +242,10 @@ function EmsContent() {
     })();
   }, [card.lastOralIntake, lastHandoff, medplum]);
 
-  const onVoiceStarted = useCallback(async () => {
+  const openIncoming = useCallback(async () => {
     if (handoffRef.current) {
-      setStatus("Voice connected — hospital already has this Incoming card.");
-      return;
+      setStatus("Hospital already has this Incoming card.");
+      return handoffRef.current;
     }
     try {
       const handoff = await createDraftHandoff(medplum, {
@@ -258,10 +260,16 @@ function EmsContent() {
             : ""
         }.`,
       );
+      return handoff;
     } catch (err) {
       setStatus(err instanceof Error ? err.message : "Failed to open Incoming handoff");
+      return null;
     }
   }, [medplum, card]);
+
+  const onVoiceStarted = useCallback(async () => {
+    await openIncoming();
+  }, [openIncoming]);
 
   async function onConfirm() {
     setBusy(true);
@@ -313,6 +321,46 @@ function EmsContent() {
         />
       </div>
 
+      <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900/30 p-4">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.15em] text-zinc-500">
+          Text fallback
+        </p>
+        <p className="mt-1 text-xs text-zinc-500">
+          Use if mic/voice fails. Opens Incoming without voice, then parses the
+          report into the card.
+        </p>
+        <textarea
+          value={reportText}
+          onChange={(e) => setReportText(e.target.value)}
+          rows={3}
+          placeholder='e.g. Incoming 27-year-old female, motorcycle collision. BP 92 over 60, heart rate 128, GCS 13…'
+          className="mt-3 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600"
+        />
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void openIncoming()}
+            className="rounded-md border border-zinc-600 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+          >
+            Open Incoming card
+          </button>
+          <button
+            type="button"
+            disabled={busy || !reportText.trim()}
+            onClick={() => {
+              const next = applyHandoffText(card, reportText);
+              setCard(next);
+              setStatus("Applied text to trauma card (hospital updates via live patch).");
+              if (!handoffRef.current) void openIncoming();
+            }}
+            className="rounded-md border border-zinc-600 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+          >
+            Apply text to card
+          </button>
+        </div>
+      </div>
+
       {banner && (
         <div
           className="mt-4 rounded-md border border-teal-700/50 bg-teal-950/40 px-4 py-3 text-sm text-teal-100"
@@ -327,6 +375,9 @@ function EmsContent() {
           type="button"
           onClick={() => {
             setCard({ ...DEMO_TRAUMA_CARD, etaCapturedAt: new Date().toISOString() });
+            setReportText(
+              "Incoming 27-year-old female, motorcycle collision. Blood pressure 92 over 60, heart rate 128, GCS 13. Possible left femur fracture. Allergic to penicillin. No known anticoagulants. ETA six minutes.",
+            );
             setStatus(null);
             setInjectMessage(null);
             setBanner(null);

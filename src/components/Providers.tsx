@@ -6,9 +6,11 @@ import {
   useMedplum,
   useMedplumContext,
   useMedplumProfile,
+  useSubscription,
 } from "@medplum/react-hooks";
 import {
   FormEvent,
+  useCallback,
   useEffect,
   useMemo,
   useState,
@@ -36,6 +38,8 @@ function ConnectionStatus() {
   const medplum = useMedplum();
   const profile = useMedplumProfile();
   const [state, setState] = useState<ConnState>({ status: "checking" });
+  const [ws, setWs] = useState<"idle" | "open" | "closed" | "error">("idle");
+  const [wsError, setWsError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -58,6 +62,30 @@ function ConnectionStatus() {
       cancelled = true;
     };
   }, [medplum]);
+
+  const onWsOpen = useCallback(() => {
+    setWs("open");
+    setWsError(null);
+  }, []);
+  const onWsClose = useCallback(() => setWs("closed"), []);
+  const onWsError = useCallback((err: Error) => {
+    setWs("error");
+    setWsError(err.message);
+  }, []);
+
+  // Probes Medplum WebSocket subscriptions (requires signed-in user + feature flag)
+  useSubscription(
+    profile ? "Communication?_count=1" : undefined,
+    () => {
+      /* presence only */
+    },
+    {
+      onWebSocketOpen: onWsOpen,
+      onWebSocketClose: onWsClose,
+      onSubscriptionConnect: onWsOpen,
+      onError: onWsError,
+    },
+  );
 
   return (
     <div className="flex flex-col items-end gap-1 text-xs font-mono tracking-wide">
@@ -87,6 +115,33 @@ function ConnectionStatus() {
           </span>
         )}
       </div>
+      {profile && (
+        <div className="flex items-center gap-2" title={wsError ?? undefined}>
+          <span
+            className={`inline-block h-2 w-2 rounded-full ${
+              ws === "open"
+                ? "bg-emerald-400"
+                : ws === "error"
+                  ? "bg-red-500"
+                  : ws === "closed"
+                    ? "bg-amber-400"
+                    : "bg-zinc-600"
+            }`}
+            aria-hidden
+          />
+          <span
+            className={
+              ws === "open"
+                ? "text-emerald-400/90"
+                : ws === "error"
+                  ? "text-red-400"
+                  : "text-zinc-500"
+            }
+          >
+            WS {ws === "idle" ? "connecting…" : ws}
+          </span>
+        </div>
+      )}
       {profile && (
         <button
           type="button"
@@ -189,8 +244,11 @@ function LoginForm() {
 function AuthGate({ children }: { children: ReactNode }) {
   const profile = useMedplumProfile();
   const { loading } = useMedplumContext();
+  // Avoid SSR/client mismatch: localStorage session only exists in the browser
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
-  if (loading) {
+  if (!mounted || loading) {
     return (
       <p className="text-center text-sm text-zinc-500">Restoring Medplum session…</p>
     );

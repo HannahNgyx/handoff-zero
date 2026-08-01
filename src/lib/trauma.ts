@@ -124,3 +124,75 @@ export function patientLine(card: TraumaCard): string {
   const mech = card.mechanism ?? "Unknown mechanism";
   return `${age}${sex} · ${mech}`;
 }
+
+/**
+ * Lightweight text fallback when voice/mic fails — extracts common handoff phrases.
+ * Prefer Deepgram function calling when the agent is connected.
+ */
+export function applyHandoffText(card: TraumaCard, text: string): TraumaCard {
+  const t = text.trim();
+  if (!t) return card;
+  const lower = t.toLowerCase();
+  const next: TraumaCard = {
+    ...card,
+    vitals: { ...card.vitals },
+    etaCapturedAt: card.etaCapturedAt ?? new Date().toISOString(),
+  };
+
+  const ageSex = lower.match(
+    /(\d{1,3})[-\s]?(year[-\s]?old|yo)?\s*(female|male|woman|man|girl|boy)/,
+  );
+  if (ageSex) {
+    next.age = Number(ageSex[1]);
+    const s = ageSex[3];
+    next.sex =
+      s === "female" || s === "woman" || s === "girl"
+        ? "female"
+        : s === "male" || s === "man" || s === "boy"
+          ? "male"
+          : next.sex;
+  }
+
+  if (/motorcycle|mcc|bike/.test(lower)) {
+    next.mechanism = "Motorcycle collision";
+  } else if (/mvc|motor\s*vehicle|car\s*accident/.test(lower)) {
+    next.mechanism = "Motor vehicle collision";
+  } else if (/fall/.test(lower)) {
+    next.mechanism = "Fall";
+  }
+
+  const bp = lower.match(
+    /(?:blood\s*pressure|bp)\s*(?:is\s*)?(\d{2,3})\s*(?:over|\/)\s*(\d{2,3})/,
+  ) || lower.match(/(\d{2,3})\s*over\s*(\d{2,3})/);
+  if (bp) {
+    next.vitals.bpSystolic = Number(bp[1]);
+    next.vitals.bpDiastolic = Number(bp[2]);
+  }
+
+  const hr = lower.match(/(?:heart\s*rate|hr|pulse)\s*(?:is\s*)?(\d{2,3})/);
+  if (hr) next.vitals.heartRate = Number(hr[1]);
+
+  const gcs = lower.match(/gcs\s*(?:of\s*)?(\d{1,2})/);
+  if (gcs) next.vitals.gcs = Number(gcs[1]);
+
+  if (/femur/.test(lower)) {
+    next.injury = "Suspected left femur fracture";
+  } else if (/fracture|injury/.test(lower) && !next.injury) {
+    next.injury = "Suspected traumatic injury";
+  }
+
+  if (/penicillin/.test(lower)) next.allergy = "PENICILLIN";
+  if (/no known anticoagulants|not on anticoagulants|no anticoagulants/.test(lower)) {
+    next.anticoagulants = "None reported";
+  }
+
+  const eta = lower.match(/eta\s*(?:is\s*)?(\d{1,2})\s*(?:min|minutes)?/);
+  if (eta) next.etaMinutes = Number(eta[1]);
+
+  const oral = lower.match(
+    /(?:last\s*(?:ate|drank|oral\s*intake)|ate|drank)\s*(?:around\s*|at\s*)?(.+?)(?:\.|$)/,
+  );
+  if (oral?.[1]) next.lastOralIntake = oral[1].trim().slice(0, 80);
+
+  return next;
+}
