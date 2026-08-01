@@ -70,7 +70,7 @@ export type ActiveHandoff = {
   id: string;
   card: TraumaCard;
   transmittedAt: string;
-  mode: "medplum" | "local";
+  mode: "medplum";
   serviceRequestId?: string;
   encounterId?: string;
   patientId?: string;

@@ -2,6 +2,11 @@
 
 import { AppChrome } from "@/components/Providers";
 import {
+  ACCEPTANCE_COMM_CRITERIA,
+  buildHandoffTransaction,
+  handoffFromBatchResult,
+} from "@/lib/fhir/handoff";
+import {
   DEMO_TRAUMA_CARD,
   EMPTY_TRAUMA_CARD,
   formatBp,
@@ -12,6 +17,8 @@ import {
   type ActiveHandoff,
   type TraumaCard,
 } from "@/lib/trauma";
+import type { Bundle, Communication } from "@medplum/fhirtypes";
+import { useMedplum, useSubscription } from "@medplum/react-hooks";
 import { useState } from "react";
 
 function Flag({ value }: { value: string | null }) {
@@ -108,39 +115,58 @@ function TraumaCardView({ card }: { card: TraumaCard }) {
 }
 
 export default function EmsPage() {
+  return (
+    <AppChrome role="EMS">
+      <EmsContent />
+    </AppChrome>
+  );
+}
+
+function EmsContent() {
+  const medplum = useMedplum();
   const [card, setCard] = useState<TraumaCard>(EMPTY_TRAUMA_CARD);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [lastHandoff, setLastHandoff] = useState<ActiveHandoff | null>(null);
+  const [acceptance, setAcceptance] = useState<string | null>(null);
 
   const hasData =
     card.age != null || card.mechanism || card.vitals.bpSystolic != null;
 
+  useSubscription(ACCEPTANCE_COMM_CRITERIA, (bundle: Bundle) => {
+    const entry = bundle.entry?.find((e) => e.resource?.resourceType === "Communication");
+    const comm = entry?.resource as Communication | undefined;
+    const raw = comm?.payload?.[0]?.contentString;
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as { type?: string; message?: string };
+      if (parsed.type === "acceptance" && parsed.message) {
+        setAcceptance(parsed.message);
+        setStatus("Hospital accepted — see acknowledgment below.");
+      }
+    } catch {
+      /* ignore */
+    }
+  });
+
   async function transmit() {
     setBusy(true);
     setStatus(null);
+    setAcceptance(null);
     try {
-      const res = await fetch("/api/handoff", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ card }),
+      const bundle = buildHandoffTransaction({
+        ...card,
+        etaCapturedAt: card.etaCapturedAt ?? new Date().toISOString(),
       });
-      const data = (await res.json()) as {
-        ok?: boolean;
-        mode?: string;
-        handoff?: ActiveHandoff;
-        warning?: string;
-        error?: string;
-      };
-      if (!res.ok || data.error) {
-        setStatus(data.error ?? `Transmit failed (${res.status})`);
-        return;
-      }
-      setLastHandoff(data.handoff ?? null);
+      const result = (await medplum.executeBatch(bundle)) as Bundle;
+      const handoff = handoffFromBatchResult(card, result);
+      setLastHandoff(handoff);
       setStatus(
-        data.mode === "medplum"
-          ? `Transmitted to Central Hospital (FHIR${data.handoff?.serviceRequestId ? ` · ServiceRequest/${data.handoff.serviceRequestId}` : ""}).`
-          : `Transmitted (local store). ${data.warning ?? ""}`,
+        `Transmitted to Central Hospital${
+          handoff.serviceRequestId
+            ? ` · ServiceRequest/${handoff.serviceRequestId}`
+            : ""
+        }.`,
       );
     } catch (err) {
       setStatus(err instanceof Error ? err.message : "Transmit failed");
@@ -150,8 +176,17 @@ export default function EmsPage() {
   }
 
   return (
-    <AppChrome role="EMS">
+    <>
       <TraumaCardView card={card} />
+
+      {acceptance && (
+        <div
+          className="mt-4 rounded-md border border-teal-700/50 bg-teal-950/40 px-4 py-3 text-sm text-teal-100"
+          role="status"
+        >
+          {acceptance}
+        </div>
+      )}
 
       <div className="mt-6 flex flex-wrap gap-3">
         <button
@@ -160,6 +195,7 @@ export default function EmsPage() {
             setCard({ ...DEMO_TRAUMA_CARD, etaCapturedAt: new Date().toISOString() });
             setStatus(null);
             setLastHandoff(null);
+            setAcceptance(null);
           }}
           className="rounded-md bg-zinc-800 px-4 py-2.5 text-sm font-medium text-zinc-100 hover:bg-zinc-700"
         >
@@ -176,7 +212,7 @@ export default function EmsPage() {
         <button
           type="button"
           disabled={!hasData || busy}
-          onClick={transmit}
+          onClick={() => void transmit()}
           className="rounded-md border border-teal-600/80 bg-teal-700/30 px-4 py-2.5 text-sm font-medium text-teal-100 enabled:hover:bg-teal-700/50 disabled:cursor-not-allowed disabled:border-zinc-700 disabled:bg-transparent disabled:text-zinc-500"
         >
           {busy ? "Transmitting…" : "Transmit to Central Hospital"}
@@ -190,18 +226,17 @@ export default function EmsPage() {
       )}
       {lastHandoff && (
         <p className="mt-1 font-mono text-xs text-zinc-500">
-          id {lastHandoff.id} · {lastHandoff.mode} · {lastHandoff.transmittedAt}
+          id {lastHandoff.id}
+          {lastHandoff.serviceRequestId
+            ? ` · ServiceRequest/${lastHandoff.serviceRequestId}`
+            : ""}
         </p>
       )}
 
       <p className="mt-8 text-xs text-zinc-600">
-        Phase 2 — one Transmit writes the FHIR handoff packet (or local fallback).
-        Open{" "}
-        <a href="/hospital" className="text-teal-500/80 underline-offset-2 hover:underline">
-          /hospital
-        </a>{" "}
-        in another tab.
+        Phase 3 — Transmit writes FHIR via your signed-in Medplum session. Hospital
+        Accept pushes an acknowledgment over WebSocket.
       </p>
-    </AppChrome>
+    </>
   );
 }

@@ -2,12 +2,20 @@
 
 import { AppChrome } from "@/components/Providers";
 import {
+  acceptHandoff,
+  HANDOFF_SR_CRITERIA,
+  loadActiveHandoffs,
+  loadPrepTasks,
+} from "@/lib/fhir/handoff";
+import {
   formatBp,
   flagBp,
   flagHr,
   patientLine,
   type ActiveHandoff,
 } from "@/lib/trauma";
+import type { Bundle, Task } from "@medplum/fhirtypes";
+import { useMedplum, useSubscription } from "@medplum/react-hooks";
 import { useCallback, useEffect, useState } from "react";
 
 function Flag({ value }: { value: string | null }) {
@@ -19,7 +27,24 @@ function Flag({ value }: { value: string | null }) {
   );
 }
 
-function IncomingCard({ handoff }: { handoff: ActiveHandoff }) {
+function nowStamp() {
+  return new Date().toLocaleTimeString("en-US", {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function IncomingCard({
+  handoff,
+  busy,
+  onAccept,
+}: {
+  handoff: ActiveHandoff;
+  busy: boolean;
+  onAccept: () => void;
+}) {
   const { card } = handoff;
   return (
     <section className="rounded-lg border border-amber-700/40 bg-zinc-900/50 p-5">
@@ -70,11 +95,11 @@ function IncomingCard({ handoff }: { handoff: ActiveHandoff }) {
       <div className="mt-6 flex flex-wrap gap-2">
         <button
           type="button"
-          disabled
-          className="cursor-not-allowed rounded-md bg-teal-800/40 px-3 py-2 text-sm text-teal-200/50"
-          title="Phase 3"
+          disabled={busy}
+          onClick={onAccept}
+          className="rounded-md bg-teal-700 px-3 py-2 text-sm font-medium text-white hover:bg-teal-600 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Accept Patient
+          {busy ? "Accepting…" : "Accept Patient"}
         </button>
         <button
           type="button"
@@ -97,65 +122,97 @@ function IncomingCard({ handoff }: { handoff: ActiveHandoff }) {
 }
 
 export default function HospitalPage() {
+  return (
+    <AppChrome role="Hospital">
+      <HospitalContent />
+    </AppChrome>
+  );
+}
+
+function HospitalContent() {
+  const medplum = useMedplum();
   const [handoffs, setHandoffs] = useState<ActiveHandoff[]>([]);
-  const [mode, setMode] = useState<string>("…");
-  const [warning, setWarning] = useState<string | null>(null);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [accepted, setAccepted] = useState<ActiveHandoff | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [events, setEvents] = useState<string[]>([]);
   const [seenIds, setSeenIds] = useState<Set<string>>(new Set());
 
+  const pushEvent = useCallback((line: string) => {
+    setEvents((e) => [`${nowStamp()}  ${line}`, ...e].slice(0, 40));
+  }, []);
+
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch("/api/handoff", { cache: "no-store" });
-      const data = (await res.json()) as {
-        mode: string;
-        handoffs: ActiveHandoff[];
-        warning?: string;
-      };
-      setMode(data.mode);
-      setWarning(data.warning ?? null);
-      setHandoffs(data.handoffs ?? []);
+      const list = await loadActiveHandoffs(medplum);
+      setHandoffs(list);
+      setError(null);
 
       setSeenIds((prev) => {
         const next = new Set(prev);
-        const newEvents: string[] = [];
-        for (const h of data.handoffs ?? []) {
+        for (const h of list) {
           if (!next.has(h.id)) {
             next.add(h.id);
-            const t = new Date(h.transmittedAt).toLocaleTimeString("en-US", {
-              hour12: false,
-              hour: "2-digit",
-              minute: "2-digit",
-              second: "2-digit",
-            });
-            newEvents.push(`${t}  Handoff transmitted`);
-            if (h.mode === "medplum") {
-              newEvents.push(`${t}  Encounter created at receiving hospital`);
-              newEvents.push(`${t}  Observations / AllergyIntolerance received`);
-            }
+            const t = nowStamp();
+            setEvents((e) =>
+              [
+                `${t}  Handoff transmitted`,
+                `${t}  Encounter created at receiving hospital`,
+                `${t}  Observations / AllergyIntolerance received`,
+                ...e,
+              ].slice(0, 40),
+            );
           }
-        }
-        if (newEvents.length) {
-          setEvents((e) => [...newEvents, ...e].slice(0, 40));
         }
         return next;
       });
+
+      if (accepted?.encounterId) {
+        const prep = await loadPrepTasks(medplum, accepted.encounterId);
+        setTasks(prep);
+      }
     } catch (err) {
-      setWarning(err instanceof Error ? err.message : "Poll failed");
+      setError(err instanceof Error ? err.message : "Failed to load handoffs");
     }
-  }, []);
+  }, [medplum, accepted?.encounterId]);
 
   useEffect(() => {
     void refresh();
-    const id = setInterval(() => void refresh(), 2000);
-    return () => clearInterval(id);
   }, [refresh]);
+
+  useSubscription(HANDOFF_SR_CRITERIA, (_bundle: Bundle) => {
+    void refresh();
+  });
+
+  useSubscription(`Task?_tag=https://traumatink.app/fhir/tag|prearrival-handoff`, () => {
+    void refresh();
+  });
+
+  async function onAccept(handoff: ActiveHandoff) {
+    setBusy(true);
+    setError(null);
+    try {
+      const { tasks: created } = await acceptHandoff(medplum, handoff);
+      setAccepted(handoff);
+      setTasks(created);
+      setHandoffs((h) => h.filter((x) => x.id !== handoff.id));
+      pushEvent("Transfer accepted");
+      pushEvent("Trauma preparation Task created");
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Accept failed");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   const latest = handoffs[0];
 
   return (
-    <AppChrome role="Hospital">
-      {!latest ? (
-        <section className="flex min-h-[320px] flex-col items-center justify-center rounded-lg border border-dashed border-zinc-700/80 bg-zinc-900/20 px-6 py-16 text-center">
+    <>
+      {!latest && !accepted ? (
+        <section className="flex min-h-[280px] flex-col items-center justify-center rounded-lg border border-dashed border-zinc-700/80 bg-zinc-900/20 px-6 py-16 text-center">
           <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-zinc-500">
             Incoming transfer request
           </p>
@@ -163,16 +220,53 @@ export default function HospitalPage() {
             No active handoffs
           </h2>
           <p className="mt-2 max-w-sm text-sm text-zinc-500">
-            Waiting for EMS Transmit… polling every 2s ({mode}).
+            Listening on Medplum WebSocket for new ServiceRequests…
           </p>
         </section>
+      ) : latest ? (
+        <IncomingCard
+          handoff={latest}
+          busy={busy}
+          onAccept={() => void onAccept(latest)}
+        />
       ) : (
-        <IncomingCard handoff={latest} />
+        <section className="rounded-lg border border-teal-800/50 bg-zinc-900/40 p-5">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-teal-400">
+            Transfer accepted
+          </p>
+          <h2 className="mt-1 text-lg font-semibold text-zinc-50">
+            {accepted ? patientLine(accepted.card) : "Patient"}
+          </h2>
+          <p className="mt-2 text-sm text-zinc-400">
+            Trauma Bay 2 is being prepared. Acknowledgment sent to EMS.
+          </p>
+        </section>
       )}
 
-      {warning && (
-        <p className="mt-4 text-xs text-amber-500/90" role="status">
-          {warning}
+      {tasks.length > 0 && (
+        <div className="mt-6">
+          <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
+            Preparation tasks
+          </p>
+          <ul className="mt-2 space-y-2">
+            {tasks.map((task) => (
+              <li
+                key={task.id}
+                className="rounded-md border border-zinc-800 bg-zinc-900/30 px-3 py-2 text-sm"
+              >
+                <span className="text-zinc-200">{task.description}</span>
+                <span className="ml-2 text-xs text-zinc-500">
+                  {task.note?.[0]?.text ?? "requested"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {error && (
+        <p className="mt-4 text-sm text-red-400" role="alert">
+          {error}
         </p>
       )}
 
@@ -192,10 +286,9 @@ export default function HospitalPage() {
       </div>
 
       <p className="mt-8 text-xs text-zinc-600">
-        Phase 2 — hospital loads handoffs via{" "}
-        <code className="text-zinc-500">GET /api/handoff</code>. Realtime
-        subscriptions in Phase 3.
+        Phase 3 — <code className="text-zinc-500">useSubscription</code> + Accept →
+        3 Tasks + EMS acknowledgment Communication.
       </p>
-    </AppChrome>
+    </>
   );
 }
