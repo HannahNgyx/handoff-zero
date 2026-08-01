@@ -3,9 +3,13 @@
 import { AppChrome } from "@/components/Providers";
 import {
   acceptHandoff,
+  HANDOFF_COMM_CRITERIA,
   HANDOFF_SR_CRITERIA,
   loadActiveHandoffs,
+  loadOralIntake,
   loadPrepTasks,
+  ORAL_INTAKE_OBS_CRITERIA,
+  requestMoreInfo,
 } from "@/lib/fhir/handoff";
 import {
   formatBp,
@@ -36,26 +40,63 @@ function nowStamp() {
   });
 }
 
+function StatusBadge({ status }: { status: ActiveHandoff["handoffStatus"] }) {
+  const confirmed = status === "confirmed";
+  return (
+    <span
+      className={`inline-block rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+        confirmed
+          ? "bg-teal-950 text-teal-300 ring-1 ring-teal-700/50"
+          : "bg-amber-950 text-amber-300 ring-1 ring-amber-700/50"
+      }`}
+    >
+      {confirmed ? "Confirmed" : "Incoming"}
+    </span>
+  );
+}
+
 function IncomingCard({
   handoff,
   busy,
   onAccept,
+  onRequestInfo,
 }: {
   handoff: ActiveHandoff;
   busy: boolean;
   onAccept: () => void;
+  onRequestInfo: () => void;
 }) {
   const { card } = handoff;
+  const hasClinical =
+    card.age != null ||
+    card.mechanism ||
+    card.vitals.bpSystolic != null ||
+    card.injury;
+
   return (
-    <section className="rounded-lg border border-amber-700/40 bg-zinc-900/50 p-5">
+    <section
+      className={`rounded-lg border bg-zinc-900/50 p-5 ${
+        handoff.handoffStatus === "confirmed"
+          ? "border-teal-700/40"
+          : "border-amber-700/40"
+      }`}
+    >
       <div className="flex items-start justify-between gap-4 border-b border-zinc-800 pb-4">
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-amber-400/90">
-            Incoming transfer request
-          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-zinc-500">
+              Pre-arrival handoff
+            </p>
+            <StatusBadge status={handoff.handoffStatus} />
+          </div>
           <h2 className="mt-1 text-lg font-semibold tracking-tight text-zinc-50">
-            {patientLine(card)}
+            {hasClinical ? patientLine(card) : "Awaiting clinical details…"}
           </h2>
+          {handoff.handoffStatus === "incoming" && (
+            <p className="mt-1 text-xs text-amber-200/70">
+              Live pre-arrival — not yet confirmed by EMS. Actions still available.
+            </p>
+          )}
         </div>
         <p className="font-mono text-sm text-zinc-300">
           ETA{" "}
@@ -90,6 +131,10 @@ function IncomingCard({
             {card.allergy ?? "—"}
           </dd>
         </div>
+        <div className="flex justify-between gap-4">
+          <dt className="text-zinc-500">Last oral intake</dt>
+          <dd className="text-right">{card.lastOralIntake ?? "—"}</dd>
+        </div>
       </dl>
 
       <div className="mt-6 flex flex-wrap gap-2">
@@ -103,9 +148,9 @@ function IncomingCard({
         </button>
         <button
           type="button"
-          disabled
-          className="cursor-not-allowed rounded-md border border-zinc-700 px-3 py-2 text-sm text-zinc-500"
-          title="Phase 5"
+          disabled={busy}
+          onClick={onRequestInfo}
+          className="rounded-md border border-amber-700/60 px-3 py-2 text-sm text-amber-100 hover:bg-amber-950/40 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Request More Info
         </button>
@@ -138,6 +183,8 @@ function HospitalContent() {
   const [error, setError] = useState<string | null>(null);
   const [events, setEvents] = useState<string[]>([]);
   const [seenIds, setSeenIds] = useState<Set<string>>(new Set());
+  const [seenConfirmed, setSeenConfirmed] = useState<Set<string>>(new Set());
+  const [infoRequested, setInfoRequested] = useState(false);
 
   const pushEvent = useCallback((line: string) => {
     setEvents((e) => [`${nowStamp()}  ${line}`, ...e].slice(0, 40));
@@ -157,8 +204,25 @@ function HospitalContent() {
             const t = nowStamp();
             setEvents((e) =>
               [
-                `${t}  Handoff transmitted`,
+                `${t}  Handoff started (incoming)`,
                 `${t}  Encounter created at receiving hospital`,
+                ...e,
+              ].slice(0, 40),
+            );
+          }
+        }
+        return next;
+      });
+
+      setSeenConfirmed((prev) => {
+        const next = new Set(prev);
+        for (const h of list) {
+          if (h.handoffStatus === "confirmed" && !next.has(h.id)) {
+            next.add(h.id);
+            const t = nowStamp();
+            setEvents((e) =>
+              [
+                `${t}  Handoff confirmed by EMS`,
                 `${t}  Observations / AllergyIntolerance received`,
                 ...e,
               ].slice(0, 40),
@@ -171,11 +235,19 @@ function HospitalContent() {
       if (accepted?.encounterId) {
         const prep = await loadPrepTasks(medplum, accepted.encounterId);
         setTasks(prep);
+        const oral = await loadOralIntake(medplum, accepted.encounterId);
+        if (oral && accepted.card.lastOralIntake !== oral) {
+          setAccepted({
+            ...accepted,
+            card: { ...accepted.card, lastOralIntake: oral },
+          });
+          pushEvent(`Oral intake Observation: ${oral}`);
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load handoffs");
     }
-  }, [medplum, accepted?.encounterId]);
+  }, [medplum, accepted, pushEvent]);
 
   useEffect(() => {
     void refresh();
@@ -185,7 +257,15 @@ function HospitalContent() {
     void refresh();
   });
 
+  useSubscription(HANDOFF_COMM_CRITERIA, () => {
+    void refresh();
+  });
+
   useSubscription(`Task?_tag=https://traumatink.app/fhir/tag|prearrival-handoff`, () => {
+    void refresh();
+  });
+
+  useSubscription(ORAL_INTAKE_OBS_CRITERIA, () => {
     void refresh();
   });
 
@@ -198,7 +278,7 @@ function HospitalContent() {
       setTasks(created);
       setHandoffs((h) => h.filter((x) => x.id !== handoff.id));
       pushEvent("Transfer accepted");
-      pushEvent("Trauma preparation Task created");
+      pushEvent("Trauma preparation Tasks created (×3)");
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Accept failed");
@@ -207,7 +287,22 @@ function HospitalContent() {
     }
   }
 
+  async function onRequestInfo(handoff: ActiveHandoff) {
+    setBusy(true);
+    setError(null);
+    try {
+      await requestMoreInfo(medplum, handoff);
+      setInfoRequested(true);
+      pushEvent("Info requested: last oral intake");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Request info failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const latest = handoffs[0];
+  const focus = latest ?? accepted;
 
   return (
     <>
@@ -220,7 +315,7 @@ function HospitalContent() {
             No active handoffs
           </h2>
           <p className="mt-2 max-w-sm text-sm text-zinc-500">
-            Listening on Medplum WebSocket for new ServiceRequests…
+            Listening for EMS voice call start (Incoming draft) and Confirm…
           </p>
         </section>
       ) : latest ? (
@@ -228,6 +323,7 @@ function HospitalContent() {
           handoff={latest}
           busy={busy}
           onAccept={() => void onAccept(latest)}
+          onRequestInfo={() => void onRequestInfo(latest)}
         />
       ) : (
         <section className="rounded-lg border border-teal-800/50 bg-zinc-900/40 p-5">
@@ -240,6 +336,24 @@ function HospitalContent() {
           <p className="mt-2 text-sm text-zinc-400">
             Trauma Bay 2 is being prepared. Acknowledgment sent to EMS.
           </p>
+          <dl className="mt-4 space-y-2 font-mono text-sm">
+            <div className="flex justify-between gap-4">
+              <dt className="text-zinc-500">Last oral intake</dt>
+              <dd>{accepted?.card.lastOralIntake ?? "—"}</dd>
+            </div>
+          </dl>
+          <div className="mt-5 flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={busy || infoRequested}
+              onClick={() => accepted && void onRequestInfo(accepted)}
+              className="rounded-md border border-amber-700/60 px-3 py-2 text-sm text-amber-100 hover:bg-amber-950/40 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {infoRequested
+                ? "Info requested…"
+                : "Request More Info: Last oral intake"}
+            </button>
+          </div>
         </section>
       )}
 
@@ -285,9 +399,15 @@ function HospitalContent() {
         )}
       </div>
 
+      {focus?.serviceRequestId && (
+        <p className="mt-4 font-mono text-xs text-zinc-600">
+          ServiceRequest/{focus.serviceRequestId} · {focus.handoffStatus}
+        </p>
+      )}
+
       <p className="mt-8 text-xs text-zinc-600">
-        Phase 3 — <code className="text-zinc-500">useSubscription</code> + Accept →
-        3 Tasks + EMS acknowledgment Communication.
+        Incoming at EMS call start · Confirmed when EMS confirms · Accept / Request
+        Info work on both.
       </p>
     </>
   );

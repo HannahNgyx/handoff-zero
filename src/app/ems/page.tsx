@@ -1,10 +1,14 @@
 "use client";
 
 import { AppChrome } from "@/components/Providers";
+import { VoiceHandoff } from "@/components/VoiceHandoff";
 import {
   ACCEPTANCE_COMM_CRITERIA,
-  buildHandoffTransaction,
-  handoffFromBatchResult,
+  confirmHandoff,
+  createDraftHandoff,
+  INFO_REQUEST_COMM_CRITERIA,
+  patchHandoffCard,
+  writeOralIntakeObservation,
 } from "@/lib/fhir/handoff";
 import {
   DEMO_TRAUMA_CARD,
@@ -19,7 +23,7 @@ import {
 } from "@/lib/trauma";
 import type { Bundle, Communication } from "@medplum/fhirtypes";
 import { useMedplum, useSubscription } from "@medplum/react-hooks";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 function Flag({ value }: { value: string | null }) {
   if (!value) return null;
@@ -30,7 +34,13 @@ function Flag({ value }: { value: string | null }) {
   );
 }
 
-function TraumaCardView({ card }: { card: TraumaCard }) {
+function TraumaCardView({
+  card,
+  handoffStatus,
+}: {
+  card: TraumaCard;
+  handoffStatus: ActiveHandoff["handoffStatus"] | null;
+}) {
   const missing = getMissingFields(card);
   const hasAny =
     card.age != null ||
@@ -48,6 +58,15 @@ function TraumaCardView({ card }: { card: TraumaCard }) {
           {hasAny && (
             <p className="mt-1 text-sm text-zinc-400">{patientLine(card)}</p>
           )}
+          {handoffStatus && (
+            <p
+              className={`mt-2 text-[10px] font-semibold uppercase tracking-wider ${
+                handoffStatus === "confirmed" ? "text-teal-400" : "text-amber-400"
+              }`}
+            >
+              {handoffStatus === "confirmed" ? "Confirmed" : "Incoming (live)"}
+            </p>
+          )}
         </div>
         <p className="font-mono text-sm text-zinc-300">
           ETA{" "}
@@ -59,7 +78,8 @@ function TraumaCardView({ card }: { card: TraumaCard }) {
 
       {!hasAny ? (
         <p className="mt-6 text-sm text-zinc-500">
-          Load the demo handoff (or use voice in Phase 4), then Transmit.
+          Start voice to open an Incoming hospital card, then speak the handoff
+          (or load the demo). Confirm when the packet looks right.
         </p>
       ) : (
         <dl className="mt-4 space-y-2.5 font-mono text-sm">
@@ -95,6 +115,10 @@ function TraumaCardView({ card }: { card: TraumaCard }) {
             <dt className="text-zinc-500">Anticoagulants</dt>
             <dd>{card.anticoagulants ?? "—"}</dd>
           </div>
+          <div className="flex justify-between gap-4">
+            <dt className="text-zinc-500">Last oral intake</dt>
+            <dd>{card.lastOralIntake ?? "—"}</dd>
+          </div>
         </dl>
       )}
 
@@ -128,63 +152,173 @@ function EmsContent() {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [lastHandoff, setLastHandoff] = useState<ActiveHandoff | null>(null);
-  const [acceptance, setAcceptance] = useState<string | null>(null);
+  const [injectMessage, setInjectMessage] = useState<string | null>(null);
+  const [banner, setBanner] = useState<string | null>(null);
+  const wroteOralRef = useRef<string | null>(null);
+  const handoffRef = useRef<ActiveHandoff | null>(null);
+  const patchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  handoffRef.current = lastHandoff;
 
   const hasData =
     card.age != null || card.mechanism || card.vitals.bpSystolic != null;
 
-  useSubscription(ACCEPTANCE_COMM_CRITERIA, (bundle: Bundle) => {
-    const entry = bundle.entry?.find((e) => e.resource?.resourceType === "Communication");
-    const comm = entry?.resource as Communication | undefined;
-    const raw = comm?.payload?.[0]?.contentString;
-    if (!raw) return;
-    try {
-      const parsed = JSON.parse(raw) as { type?: string; message?: string };
-      if (parsed.type === "acceptance" && parsed.message) {
-        setAcceptance(parsed.message);
-        setStatus("Hospital accepted — see acknowledgment below.");
+  useSubscription(
+    ACCEPTANCE_COMM_CRITERIA,
+    (bundle: Bundle) => {
+      const entry = bundle.entry?.find((e) => e.resource?.resourceType === "Communication");
+      const comm = entry?.resource as Communication | undefined;
+      const raw = comm?.payload?.[0]?.contentString;
+      if (!raw) return;
+      try {
+        const parsed = JSON.parse(raw) as { type?: string; message?: string };
+        if (parsed.type === "acceptance" && parsed.message) {
+          setInjectMessage(parsed.message);
+          setBanner(parsed.message);
+          setStatus("Hospital accepted — see acknowledgment below.");
+        }
+      } catch {
+        /* ignore */
       }
-    } catch {
-      /* ignore */
-    }
-  });
+    },
+  );
 
-  async function transmit() {
-    setBusy(true);
-    setStatus(null);
-    setAcceptance(null);
+  useSubscription(
+    INFO_REQUEST_COMM_CRITERIA,
+    (bundle: Bundle) => {
+      const entry = bundle.entry?.find((e) => e.resource?.resourceType === "Communication");
+      const comm = entry?.resource as Communication | undefined;
+      const raw = comm?.payload?.[0]?.contentString;
+      if (!raw) return;
+      try {
+        const parsed = JSON.parse(raw) as { type?: string; message?: string };
+        if (parsed.type === "info-request" && parsed.message) {
+          setInjectMessage(parsed.message);
+          setBanner(parsed.message);
+          setStatus("Hospital requested more info — agent will ask when voice is connected.");
+        }
+      } catch {
+        /* ignore */
+      }
+    },
+  );
+
+  // Debounced live patch while Incoming (and after Confirm for late field updates).
+  useEffect(() => {
+    const handoff = handoffRef.current;
+    if (!handoff?.communicationId && !handoff?.encounterId) return;
+    if (patchTimer.current) clearTimeout(patchTimer.current);
+    patchTimer.current = setTimeout(() => {
+      const current = handoffRef.current;
+      if (!current) return;
+      void patchHandoffCard(medplum, current, card)
+        .then((next) => {
+          setLastHandoff(next);
+        })
+        .catch((err) => {
+          setStatus(err instanceof Error ? err.message : "Live patch failed");
+        });
+    }, 400);
+    return () => {
+      if (patchTimer.current) clearTimeout(patchTimer.current);
+    };
+  }, [card, medplum, lastHandoff?.id]);
+
+  useEffect(() => {
+    const value = card.lastOralIntake?.trim();
+    if (!value || !lastHandoff?.encounterId || !lastHandoff.patientId) return;
+    if (wroteOralRef.current === value) return;
+    wroteOralRef.current = value;
+    void (async () => {
+      try {
+        await writeOralIntakeObservation(medplum, lastHandoff, value);
+        setStatus(`Oral intake sent to hospital: ${value}`);
+      } catch (err) {
+        wroteOralRef.current = null;
+        setStatus(err instanceof Error ? err.message : "Failed to write oral intake");
+      }
+    })();
+  }, [card.lastOralIntake, lastHandoff, medplum]);
+
+  const onVoiceStarted = useCallback(async () => {
+    if (handoffRef.current) {
+      setStatus("Voice connected — hospital already has this Incoming card.");
+      return;
+    }
     try {
-      const bundle = buildHandoffTransaction({
+      const handoff = await createDraftHandoff(medplum, {
         ...card,
         etaCapturedAt: card.etaCapturedAt ?? new Date().toISOString(),
       });
-      const result = (await medplum.executeBatch(bundle)) as Bundle;
-      const handoff = handoffFromBatchResult(card, result);
       setLastHandoff(handoff);
       setStatus(
-        `Transmitted to Central Hospital${
+        `Incoming handoff opened at hospital${
           handoff.serviceRequestId
             ? ` · ServiceRequest/${handoff.serviceRequestId}`
             : ""
         }.`,
       );
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "Transmit failed");
+      setStatus(err instanceof Error ? err.message : "Failed to open Incoming handoff");
+    }
+  }, [medplum, card]);
+
+  async function onConfirm() {
+    setBusy(true);
+    setStatus(null);
+    try {
+      let handoff = lastHandoff;
+      if (!handoff) {
+        handoff = await createDraftHandoff(medplum, {
+          ...card,
+          etaCapturedAt: card.etaCapturedAt ?? new Date().toISOString(),
+        });
+      }
+      const confirmed = await confirmHandoff(medplum, handoff, {
+        ...card,
+        etaCapturedAt: card.etaCapturedAt ?? new Date().toISOString(),
+      });
+      setLastHandoff(confirmed);
+      setStatus(
+        `Handoff confirmed${
+          confirmed.serviceRequestId
+            ? ` · ServiceRequest/${confirmed.serviceRequestId}`
+            : ""
+        }.`,
+      );
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Confirm failed");
     } finally {
       setBusy(false);
     }
   }
 
+  const onCardChange = useCallback((next: TraumaCard) => {
+    setCard(next);
+  }, []);
+
   return (
     <>
-      <TraumaCardView card={card} />
+      <TraumaCardView
+        card={card}
+        handoffStatus={lastHandoff?.handoffStatus ?? null}
+      />
 
-      {acceptance && (
+      <div className="mt-4">
+        <VoiceHandoff
+          card={card}
+          onCardChange={onCardChange}
+          injectMessage={injectMessage}
+          onVoiceStarted={onVoiceStarted}
+        />
+      </div>
+
+      {banner && (
         <div
           className="mt-4 rounded-md border border-teal-700/50 bg-teal-950/40 px-4 py-3 text-sm text-teal-100"
           role="status"
         >
-          {acceptance}
+          {banner}
         </div>
       )}
 
@@ -194,8 +328,10 @@ function EmsContent() {
           onClick={() => {
             setCard({ ...DEMO_TRAUMA_CARD, etaCapturedAt: new Date().toISOString() });
             setStatus(null);
-            setLastHandoff(null);
-            setAcceptance(null);
+            setInjectMessage(null);
+            setBanner(null);
+            wroteOralRef.current = null;
+            // Keep lastHandoff so demo fill patches the open Incoming card.
           }}
           className="rounded-md bg-zinc-800 px-4 py-2.5 text-sm font-medium text-zinc-100 hover:bg-zinc-700"
         >
@@ -203,19 +339,15 @@ function EmsContent() {
         </button>
         <button
           type="button"
-          disabled
-          className="cursor-not-allowed rounded-md bg-teal-700/40 px-4 py-2.5 text-sm font-medium text-teal-200/60"
-          title="Phase 4"
-        >
-          Start voice handoff
-        </button>
-        <button
-          type="button"
-          disabled={!hasData || busy}
-          onClick={() => void transmit()}
+          disabled={!hasData || busy || lastHandoff?.handoffStatus === "confirmed"}
+          onClick={() => void onConfirm()}
           className="rounded-md border border-teal-600/80 bg-teal-700/30 px-4 py-2.5 text-sm font-medium text-teal-100 enabled:hover:bg-teal-700/50 disabled:cursor-not-allowed disabled:border-zinc-700 disabled:bg-transparent disabled:text-zinc-500"
         >
-          {busy ? "Transmitting…" : "Transmit to Central Hospital"}
+          {busy
+            ? "Confirming…"
+            : lastHandoff?.handoffStatus === "confirmed"
+              ? "Confirmed"
+              : "Confirm handoff"}
         </button>
       </div>
 
@@ -226,7 +358,7 @@ function EmsContent() {
       )}
       {lastHandoff && (
         <p className="mt-1 font-mono text-xs text-zinc-500">
-          id {lastHandoff.id}
+          {lastHandoff.handoffStatus}
           {lastHandoff.serviceRequestId
             ? ` · ServiceRequest/${lastHandoff.serviceRequestId}`
             : ""}
@@ -234,8 +366,8 @@ function EmsContent() {
       )}
 
       <p className="mt-8 text-xs text-zinc-600">
-        Phase 3 — Transmit writes FHIR via your signed-in Medplum session. Hospital
-        Accept pushes an acknowledgment over WebSocket.
+        Start voice → hospital Incoming card. Live patches follow speech. Confirm
+        promotes the handoff to Confirmed.
       </p>
     </>
   );

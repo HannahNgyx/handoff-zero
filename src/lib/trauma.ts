@@ -66,14 +66,19 @@ export const DEMO_TRAUMA_CARD: TraumaCard = {
   etaCapturedAt: null,
 };
 
+export type HandoffStatus = "incoming" | "confirmed";
+
 export type ActiveHandoff = {
   id: string;
   card: TraumaCard;
   transmittedAt: string;
   mode: "medplum";
+  /** draft SR = incoming; active SR = confirmed by EMS */
+  handoffStatus: HandoffStatus;
   serviceRequestId?: string;
   encounterId?: string;
   patientId?: string;
+  communicationId?: string;
 };
 
 const MISSING_CHECKS: { key: keyof TraumaCard; label: string }[] = [

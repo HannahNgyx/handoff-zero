@@ -10,18 +10,33 @@ import type {
   ServiceRequest,
   Task,
 } from "@medplum/fhirtypes";
-import type { ActiveHandoff, TraumaCard } from "@/lib/trauma";
+import { EMPTY_TRAUMA_CARD, type ActiveHandoff, type TraumaCard } from "@/lib/trauma";
 
 export type { ActiveHandoff };
 
 export const TAG_SYSTEM = "https://traumatink.app/fhir/tag";
 export const TAG_HANDOFF = "prearrival-handoff";
 export const TAG_ACCEPTANCE = "acceptance-ack";
+export const TAG_INFO_REQUEST = "info-request";
+export const TAG_ORAL_INTAKE = "oral-intake";
 export const SR_CODE_SYSTEM = "https://traumatink.app/fhir/CodeSystem/handoff";
 export const SR_CODE_TRANSFER = "hospital-transfer-request";
 
-export const HANDOFF_SR_CRITERIA = `ServiceRequest?status=active&_tag=${TAG_SYSTEM}|${TAG_HANDOFF}`;
+export const ORAL_INTAKE_CODING = {
+  system: "http://loinc.org",
+  code: "11370-4",
+  display: "History of food and drink intake",
+} as const;
+
+/** Incoming (draft) + confirmed (active) pre-arrival ServiceRequests. */
+export const HANDOFF_SR_CRITERIA = `ServiceRequest?status=draft,active&_tag=${TAG_SYSTEM}|${TAG_HANDOFF}`;
 export const ACCEPTANCE_COMM_CRITERIA = `Communication?_tag=${TAG_SYSTEM}|${TAG_ACCEPTANCE}`;
+export const INFO_REQUEST_COMM_CRITERIA = `Communication?_tag=${TAG_SYSTEM}|${TAG_INFO_REQUEST}`;
+export const ORAL_INTAKE_OBS_CRITERIA = `Observation?_tag=${TAG_SYSTEM}|${TAG_ORAL_INTAKE}`;
+export const HANDOFF_COMM_CRITERIA = `Communication?_tag=${TAG_SYSTEM}|${TAG_HANDOFF}`;
+
+export const INFO_REQUEST_ORAL_INTAKE_MESSAGE =
+  "The hospital needs the patient's last known oral intake. Please ask the paramedic now.";
 
 export const PREP_TASKS = [
   { description: "Prepare trauma bay", assignee: "Charge nurse" },
@@ -44,10 +59,15 @@ function parseLocationId(location: string | undefined, resourceType: string): st
   return location.split("/")[1]?.split("/_")[0];
 }
 
-export function handoffFromBatchResult(card: TraumaCard, result: Bundle): ActiveHandoff {
+export function handoffFromBatchResult(
+  card: TraumaCard,
+  result: Bundle,
+  handoffStatus: ActiveHandoff["handoffStatus"] = "incoming",
+): ActiveHandoff {
   let serviceRequestId: string | undefined;
   let encounterId: string | undefined;
   let patientId: string | undefined;
+  let communicationId: string | undefined;
 
   for (const entry of result.entry ?? []) {
     const res = entry.resource;
@@ -55,11 +75,13 @@ export function handoffFromBatchResult(card: TraumaCard, result: Bundle): Active
       if (res.resourceType === "ServiceRequest" && res.id) serviceRequestId = res.id;
       if (res.resourceType === "Encounter" && res.id) encounterId = res.id;
       if (res.resourceType === "Patient" && res.id) patientId = res.id;
+      if (res.resourceType === "Communication" && res.id) communicationId = res.id;
     }
     const loc = entry.response?.location;
     serviceRequestId ??= parseLocationId(loc, "ServiceRequest");
     encounterId ??= parseLocationId(loc, "Encounter");
     patientId ??= parseLocationId(loc, "Patient");
+    communicationId ??= parseLocationId(loc, "Communication");
   }
 
   const transmittedAt = new Date().toISOString();
@@ -68,15 +90,33 @@ export function handoffFromBatchResult(card: TraumaCard, result: Bundle): Active
     card,
     transmittedAt,
     mode: "medplum",
+    handoffStatus,
     serviceRequestId,
     encounterId,
     patientId,
+    communicationId,
   };
+}
+
+function summaryFromCard(card: TraumaCard): string {
+  return [
+    card.age != null && card.sex ? `${card.age}${card.sex === "female" ? "F" : "M"}` : null,
+    card.mechanism,
+    card.vitals.bpSystolic != null
+      ? `BP ${card.vitals.bpSystolic}/${card.vitals.bpDiastolic}`
+      : null,
+    card.vitals.heartRate != null ? `HR ${card.vitals.heartRate}` : null,
+    card.injury,
+    card.allergy ? `Allergy ${card.allergy}` : null,
+    card.etaMinutes != null ? `ETA ${card.etaMinutes} min` : null,
+  ]
+    .filter(Boolean)
+    .join(". ");
 }
 
 export async function loadActiveHandoffs(medplum: MedplumClient): Promise<ActiveHandoff[]> {
   const requests = await medplum.searchResources("ServiceRequest", {
-    status: "active",
+    status: "draft,active",
     _tag: `${TAG_SYSTEM}|${TAG_HANDOFF}`,
     _sort: "-_lastUpdated",
     _count: "10",
@@ -87,6 +127,7 @@ export async function loadActiveHandoffs(medplum: MedplumClient): Promise<Active
   for (const sr of requests) {
     const encounterRef = sr.encounter?.reference;
     let card: TraumaCard | null = null;
+    let communicationId: string | undefined;
 
     if (encounterRef) {
       const comms = await medplum.searchResources("Communication", {
@@ -98,24 +139,202 @@ export async function loadActiveHandoffs(medplum: MedplumClient): Promise<Active
         const payload = c.payload?.[0]?.contentString;
         if (!payload) continue;
         card = cardFromCommunicationPayload(payload);
-        if (card) break;
+        if (card) {
+          communicationId = c.id;
+          break;
+        }
       }
     }
 
-    if (!card) continue;
+    // Allow empty draft shells so hospital sees Incoming at call start.
+    if (!card) {
+      card = { ...EMPTY_TRAUMA_CARD };
+    }
+
+    const encounterId = encounterRef?.replace("Encounter/", "");
+    const oral = await loadOralIntake(medplum, encounterId);
+    if (oral) card = { ...card, lastOralIntake: oral };
 
     handoffs.push({
       id: sr.id ?? crypto.randomUUID(),
       card,
       transmittedAt: sr.meta?.lastUpdated ?? sr.authoredOn ?? new Date().toISOString(),
       mode: "medplum",
+      handoffStatus: sr.status === "active" ? "confirmed" : "incoming",
       serviceRequestId: sr.id,
-      encounterId: encounterRef?.replace("Encounter/", ""),
+      encounterId,
       patientId: sr.subject?.reference?.replace("Patient/", ""),
+      communicationId,
     });
   }
 
   return handoffs;
+}
+
+/** Call start: create Patient/Encounter/Communication + draft ServiceRequest. */
+export async function createDraftHandoff(
+  medplum: MedplumClient,
+  card: TraumaCard,
+): Promise<ActiveHandoff> {
+  const bundle = buildHandoffTransaction(card, "draft");
+  const result = (await medplum.executeBatch(bundle)) as Bundle;
+  return handoffFromBatchResult(card, result, "incoming");
+}
+
+/** Live-sync card JSON on the handoff Communication while Incoming. */
+export async function patchHandoffCard(
+  medplum: MedplumClient,
+  handoff: ActiveHandoff,
+  card: TraumaCard,
+): Promise<ActiveHandoff> {
+  let communicationId = handoff.communicationId;
+
+  if (!communicationId && handoff.encounterId) {
+    const comms = await medplum.searchResources("Communication", {
+      encounter: `Encounter/${handoff.encounterId}`,
+      _tag: `${TAG_SYSTEM}|${TAG_HANDOFF}`,
+      _count: "1",
+    });
+    communicationId = comms[0]?.id;
+  }
+
+  if (!communicationId) {
+    throw new Error("Missing Communication id for handoff patch");
+  }
+
+  const existing = await medplum.readResource("Communication", communicationId);
+  await medplum.updateResource<Communication>({
+    ...existing,
+    payload: [
+      {
+        contentString: JSON.stringify({
+          summary: summaryFromCard(card),
+          card,
+        }),
+      },
+    ],
+  });
+
+  return {
+    ...handoff,
+    card,
+    communicationId,
+    transmittedAt: new Date().toISOString(),
+  };
+}
+
+/** EMS Confirm: final card patch + promote ServiceRequest draft → active. */
+export async function confirmHandoff(
+  medplum: MedplumClient,
+  handoff: ActiveHandoff,
+  card: TraumaCard,
+): Promise<ActiveHandoff> {
+  if (!handoff.serviceRequestId) {
+    throw new Error("Missing ServiceRequest id");
+  }
+
+  const patched = await patchHandoffCard(medplum, handoff, card);
+  const sr = await medplum.readResource("ServiceRequest", handoff.serviceRequestId);
+  await medplum.updateResource<ServiceRequest>({
+    ...sr,
+    status: "active",
+    note:
+      card.etaMinutes != null
+        ? [{ text: `ETA ${card.etaMinutes} minutes · confirmed` }]
+        : [{ text: "Handoff confirmed by EMS" }],
+  });
+
+  return {
+    ...patched,
+    handoffStatus: "confirmed",
+    transmittedAt: new Date().toISOString(),
+  };
+}
+
+export async function loadOralIntake(
+  medplum: MedplumClient,
+  encounterId: string | undefined,
+): Promise<string | null> {
+  if (!encounterId) return null;
+  const obs = await medplum.searchResources("Observation", {
+    encounter: `Encounter/${encounterId}`,
+    _tag: `${TAG_SYSTEM}|${TAG_ORAL_INTAKE}`,
+    _sort: "-_lastUpdated",
+    _count: "1",
+  });
+  return obs[0]?.valueString ?? null;
+}
+
+/** Hospital → EMS: ask for last oral intake via tagged Communication. */
+export async function requestMoreInfo(
+  medplum: MedplumClient,
+  handoff: ActiveHandoff,
+): Promise<Communication> {
+  const patientRef = handoff.patientId
+    ? { reference: `Patient/${handoff.patientId}` }
+    : undefined;
+  const encounterRef = handoff.encounterId
+    ? { reference: `Encounter/${handoff.encounterId}` }
+    : undefined;
+
+  return medplum.createResource<Communication>({
+    resourceType: "Communication",
+    meta: {
+      tag: metaTag({ code: TAG_INFO_REQUEST, display: "Info request" }),
+    },
+    status: "in-progress",
+    category: [{ text: "Request more information" }],
+    subject: patientRef as Communication["subject"],
+    encounter: encounterRef,
+    payload: [
+      {
+        contentString: JSON.stringify({
+          type: "info-request",
+          topic: "last-oral-intake",
+          message: INFO_REQUEST_ORAL_INTAKE_MESSAGE,
+          serviceRequestId: handoff.serviceRequestId,
+          encounterId: handoff.encounterId,
+        }),
+      },
+    ],
+  });
+}
+
+/** EMS → hospital: write last oral intake as Observation after voice update_field. */
+export async function writeOralIntakeObservation(
+  medplum: MedplumClient,
+  handoff: ActiveHandoff,
+  value: string,
+): Promise<Observation> {
+  if (!handoff.patientId || !handoff.encounterId) {
+    throw new Error("Missing patient/encounter for oral intake Observation");
+  }
+
+  return medplum.createResource<Observation>({
+    resourceType: "Observation",
+    meta: {
+      tag: metaTag({ code: TAG_ORAL_INTAKE, display: "Last oral intake" }),
+    },
+    status: "final",
+    category: [
+      {
+        coding: [
+          {
+            system: "http://terminology.hl7.org/CodeSystem/observation-category",
+            code: "survey",
+          },
+        ],
+      },
+    ],
+    code: {
+      coding: [{ ...ORAL_INTAKE_CODING }],
+      text: "Last oral intake",
+    },
+    subject: { reference: `Patient/${handoff.patientId}` },
+    encounter: { reference: `Encounter/${handoff.encounterId}` },
+    effectiveDateTime: new Date().toISOString(),
+    valueString: value,
+  });
 }
 
 export async function loadPrepTasks(
@@ -196,7 +415,10 @@ export async function acceptHandoff(
   return { tasks, communication };
 }
 
-export function buildHandoffTransaction(card: TraumaCard): Bundle {
+export function buildHandoffTransaction(
+  card: TraumaCard,
+  serviceRequestStatus: "draft" | "active" = "draft",
+): Bundle {
   const patientUrn = `urn:uuid:${crypto.randomUUID()}`;
   const encounterUrn = `urn:uuid:${crypto.randomUUID()}`;
 
@@ -414,18 +636,6 @@ export function buildHandoffTransaction(card: TraumaCard): Bundle {
     });
   }
 
-  const summaryParts = [
-    card.age != null && card.sex ? `${card.age}${card.sex === "female" ? "F" : "M"}` : null,
-    card.mechanism,
-    card.vitals.bpSystolic != null
-      ? `BP ${card.vitals.bpSystolic}/${card.vitals.bpDiastolic}`
-      : null,
-    card.vitals.heartRate != null ? `HR ${card.vitals.heartRate}` : null,
-    card.injury,
-    card.allergy ? `Allergy ${card.allergy}` : null,
-    card.etaMinutes != null ? `ETA ${card.etaMinutes} min` : null,
-  ].filter(Boolean);
-
   resources.push({
     resourceType: "Communication",
     meta: { tag: metaTag() },
@@ -436,7 +646,7 @@ export function buildHandoffTransaction(card: TraumaCard): Bundle {
     payload: [
       {
         contentString: JSON.stringify({
-          summary: summaryParts.join(". "),
+          summary: summaryFromCard(card),
           card,
         }),
       },
@@ -446,7 +656,7 @@ export function buildHandoffTransaction(card: TraumaCard): Bundle {
   resources.push({
     resourceType: "ServiceRequest",
     meta: { tag: metaTag() },
-    status: "active",
+    status: serviceRequestStatus,
     intent: "order",
     code: {
       coding: [
@@ -456,7 +666,10 @@ export function buildHandoffTransaction(card: TraumaCard): Bundle {
           display: "Hospital transfer acceptance request",
         },
       ],
-      text: "Request hospital acceptance",
+      text:
+        serviceRequestStatus === "draft"
+          ? "Incoming pre-arrival handoff (unconfirmed)"
+          : "Request hospital acceptance",
     },
     subject: { reference: patientUrn },
     encounter: { reference: encounterUrn },
@@ -500,6 +713,16 @@ export function acceptanceMessageFromPayload(raw: string): string | null {
   try {
     const parsed = JSON.parse(raw) as { type?: string; message?: string };
     if (parsed.type === "acceptance" && parsed.message) return parsed.message;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function infoRequestMessageFromPayload(raw: string): string | null {
+  try {
+    const parsed = JSON.parse(raw) as { type?: string; message?: string };
+    if (parsed.type === "info-request" && parsed.message) return parsed.message;
     return null;
   } catch {
     return null;
