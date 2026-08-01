@@ -1,12 +1,10 @@
 # TraumaLink
 
-Live pre-arrival trauma handoff between **EMS** and the **receiving hospital**.
+Live pre-arrival trauma handoff between **EMS** and the **receiving hospital**, automatically updated to MedPlum
 
 - **EMS** (`/ems`) — voice or text fills a trauma card; opens an **Incoming** case at call start; **Confirm** when the packet is ready.
 - **Hospital** (`/hospital`) — multi-case queue, Accept / Request More Info / live-connect ping, Medplum prep tasks + TraumaLink suggestions.
 - **Stack** — Next.js, Medplum (FHIR + WebSocket subscriptions), Deepgram Voice Agent.
-
-**BP** = blood pressure (systolic/diastolic, mmHg). Example: `92/60` with a **LOW** flag when systolic &lt; 90.
 
 ## Setup
 
@@ -30,43 +28,17 @@ Open two windows: [http://127.0.0.1:3000/ems](http://127.0.0.1:3000/ems) and [ht
 6. Hospital: **Request More Info** → pick topics → EMS checklist / agent ask → answer updates the card.
 7. Optional: **New patient** on EMS for a second concurrent case; **Request live connect** for a bridge ping (demo channel, not WebRTC).
 
-## Screenshots (for submission)
+## Screenshots 
+#### 1. EMS - new patient card
 
-Drop PNG/JPEG files into `docs/screenshots/` using these filenames, then the README preview below will render them.
-
-| # | File | Capture this |
-|---|------|----------------|
-| 1 | `docs/screenshots/01-ems-incoming.png` | EMS active case with trauma card (blood pressure visible) + voice panel |
-| 2 | `docs/screenshots/02-hospital-queue.png` | Hospital case queue with 2+ cases, one selected |
-| 3 | `docs/screenshots/03-hospital-accept.png` | After Accept — Medplum prep tasks + labeled TraumaLink suggestions |
-| 4 | `docs/screenshots/04-request-info.png` | Request More Info topic picker open |
-| 5 | `docs/screenshots/05-dual-browser.png` | Side-by-side EMS + Hospital (or a wide crop of both) |
-
-### Preview slots
-
-<!-- Add files under docs/screenshots/ — leave these markdown lines as-is -->
-
-#### 1. EMS — Incoming trauma card
-
-![EMS Incoming trauma card](docs/screenshots/01-ems-incoming.png)
 
 #### 2. Hospital — Multi-case queue
 
-![Hospital multi-case queue](docs/screenshots/02-hospital-queue.png)
 
 #### 3. Hospital — Accept + prep tasks
 
-![Hospital accept and Medplum prep tasks](docs/screenshots/03-hospital-accept.png)
 
-#### 4. Request More Info picker
-
-![Request More Info topic picker](docs/screenshots/04-request-info.png)
-
-#### 5. Dual-browser demo
-
-![EMS and Hospital side by side](docs/screenshots/05-dual-browser.png)
-
-## Provenance (for judges)
+## Provenance
 
 | UI label | Source |
 |----------|--------|
@@ -83,6 +55,5 @@ src/app/hospital/page.tsx     Hospital ops board
 src/components/VoiceHandoff.tsx
 src/lib/fhir/handoff.ts       FHIR builders + channel helpers
 src/lib/trauma.ts             TraumaCard types + BP helpers
-src/app/api/deepgram/token    Short-lived Deepgram JWT
-docs/screenshots/             Submission screenshots (you add)
+src/app/api/deepgram/token    Short-lived Deepgram JW
 ```
