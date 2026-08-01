@@ -4,6 +4,7 @@ import { MedplumClient } from "@medplum/core";
 import {
   MedplumProvider,
   useMedplum,
+  useMedplumContext,
   useMedplumProfile,
 } from "@medplum/react-hooks";
 import {
@@ -77,7 +78,7 @@ function ConnectionStatus() {
         {state.status === "ok" && (
           <span className="text-emerald-400/90">
             Medplum · FHIR {state.fhirVersion}
-            {profile ? " · signed in" : " · sign in required"}
+            {profile ? " · signed in" : " · sign in"}
           </span>
         )}
         {state.status === "error" && (
@@ -99,6 +100,7 @@ function ConnectionStatus() {
   );
 }
 
+/** Demo auth: email/password against Medplum (no OAuth redirect). */
 function LoginForm() {
   const medplum = useMedplum();
   const [email, setEmail] = useState("");
@@ -112,12 +114,17 @@ function LoginForm() {
     setBusy(true);
     setError(null);
     try {
-      const login = await medplum.startLogin({ email, password });
+      const login = await medplum.startLogin({
+        email,
+        password,
+        clientId: process.env.NEXT_PUBLIC_MEDPLUM_CLIENT_ID,
+      });
       if (login.code) {
         await medplum.processCode(login.code);
-      } else if (login.login) {
-        // MFA / project selection — try profile fetch; surface message if still blocked
-        await medplum.getProfile();
+      } else {
+        throw new Error(
+          "Sign-in needs another step (MFA/project). Use an account that returns a code directly.",
+        );
       }
       bump((n) => n + 1);
     } catch (err) {
@@ -132,11 +139,12 @@ function LoginForm() {
       <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-teal-400">
         TraumaLink
       </p>
-      <h2 className="mt-2 text-lg font-semibold text-zinc-50">Sign in to Medplum</h2>
+      <h2 className="mt-2 text-lg font-semibold text-zinc-50">
+        Sign in to Medplum
+      </h2>
       <p className="mt-1 mb-4 text-sm text-zinc-500">
-        Use your Medplum project email/password on both EMS and hospital tabs.
-        Enable <code className="text-zinc-400">websocket-subscriptions</code> on
-        the project for live updates.
+        Demo login — use your Medplum project email and password on both EMS and
+        hospital tabs. Stays on this page (no OAuth redirect).
       </p>
       <form onSubmit={(e) => void onSubmit(e)} className="space-y-3">
         <label className="block text-xs text-zinc-400">
@@ -180,6 +188,14 @@ function LoginForm() {
 
 function AuthGate({ children }: { children: ReactNode }) {
   const profile = useMedplumProfile();
+  const { loading } = useMedplumContext();
+
+  if (loading) {
+    return (
+      <p className="text-center text-sm text-zinc-500">Restoring Medplum session…</p>
+    );
+  }
+
   if (!profile) return <LoginForm />;
   return <>{children}</>;
 }
