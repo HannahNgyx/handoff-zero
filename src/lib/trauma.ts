@@ -105,10 +105,15 @@ export function flagHr(hr: number | null): VitalFlag {
   return null;
 }
 
+/** Blood pressure (BP) as systolic/diastolic mmHg — shows partial values if only one side is known. */
 export function formatBp(card: TraumaCard): string {
   const { bpSystolic, bpDiastolic } = card.vitals;
-  if (bpSystolic == null || bpDiastolic == null) return "—";
-  return `${bpSystolic}/${bpDiastolic}`;
+  if (bpSystolic == null && bpDiastolic == null) return "—";
+  if (bpSystolic != null && bpDiastolic != null) {
+    return `${bpSystolic}/${bpDiastolic}`;
+  }
+  if (bpSystolic != null) return `${bpSystolic}/—`;
+  return `—/${bpDiastolic}`;
 }
 
 export function patientLine(card: TraumaCard): string {
@@ -123,6 +128,45 @@ export function patientLine(card: TraumaCard): string {
           : "?";
   const mech = card.mechanism ?? "Unknown mechanism";
   return `${age}${sex} · ${mech}`;
+}
+
+/** TraumaLink client rules — not Medplum Tasks, not Deepgram voice AI. */
+export function getSuggestedAsks(card: TraumaCard): string[] {
+  const asks = getMissingFields(card).map((label) => `Ask EMS for ${label.toLowerCase()}`);
+  if (flagBp(card.vitals.bpSystolic) === "LOW") {
+    asks.unshift("Consider hypotensive protocol — confirm BP trend with EMS");
+  }
+  if (flagHr(card.vitals.heartRate) === "HIGH") {
+    asks.unshift("Tachycardia flagged — ask EMS for latest HR / rhythm notes");
+  }
+  return asks;
+}
+
+export function caseShortId(handoff: Pick<ActiveHandoff, "serviceRequestId" | "id">): string {
+  const raw = handoff.serviceRequestId ?? handoff.id;
+  return raw.slice(-4).toUpperCase();
+}
+
+export function caseTitle(handoff: ActiveHandoff): string {
+  const hasClinical =
+    handoff.card.age != null ||
+    handoff.card.mechanism ||
+    handoff.card.vitals.bpSystolic != null ||
+    handoff.card.injury;
+  return hasClinical ? patientLine(handoff.card) : "Awaiting clinical details…";
+}
+
+/** Confirmed first, then soonest ETA, then newest. */
+export function sortHandoffs(list: ActiveHandoff[]): ActiveHandoff[] {
+  return [...list].sort((a, b) => {
+    if (a.handoffStatus !== b.handoffStatus) {
+      return a.handoffStatus === "confirmed" ? -1 : 1;
+    }
+    const etaA = a.card.etaMinutes ?? 999;
+    const etaB = b.card.etaMinutes ?? 999;
+    if (etaA !== etaB) return etaA - etaB;
+    return (b.transmittedAt || "").localeCompare(a.transmittedAt || "");
+  });
 }
 
 /**
@@ -184,6 +228,21 @@ export function applyHandoffText(card: TraumaCard, text: string): TraumaCard {
   if (/penicillin/.test(lower)) next.allergy = "PENICILLIN";
   if (/no known anticoagulants|not on anticoagulants|no anticoagulants/.test(lower)) {
     next.anticoagulants = "None reported";
+  }
+
+  const blood = lower.match(
+    /(?:blood\s*type|type)\s*(?:is\s*)?(a|b|ab|o)\s*([\+\-]|positive|negative)?/,
+  );
+  if (blood) {
+    const abo = blood[1].toUpperCase();
+    const rhRaw = blood[2] ?? "";
+    const rh =
+      rhRaw === "+" || rhRaw === "positive"
+        ? "+"
+        : rhRaw === "-" || rhRaw === "negative"
+          ? "-"
+          : "";
+    next.bloodType = `${abo}${rh}` || abo;
   }
 
   const eta = lower.match(/eta\s*(?:is\s*)?(\d{1,2})\s*(?:min|minutes)?/);

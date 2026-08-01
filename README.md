@@ -1,36 +1,88 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# TraumaLink
 
-## Getting Started
+Live pre-arrival trauma handoff between **EMS** and the **receiving hospital**.
 
-First, run the development server:
+- **EMS** (`/ems`) — voice or text fills a trauma card; opens an **Incoming** case at call start; **Confirm** when the packet is ready.
+- **Hospital** (`/hospital`) — multi-case queue, Accept / Request More Info / live-connect ping, Medplum prep tasks + TraumaLink suggestions.
+- **Stack** — Next.js, Medplum (FHIR + WebSocket subscriptions), Deepgram Voice Agent.
+
+**BP** = blood pressure (systolic/diastolic, mmHg). Example: `92/60` with a **LOW** flag when systolic &lt; 90.
+
+## Setup
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+cp .env.local.example .env.local
+# Fill NEXT_PUBLIC_MEDPLUM_CLIENT_ID and DEEPGRAM_API_KEY
+# Deepgram key must be Member permission or higher (for /v1/auth/grant)
+npm install
+npm run dev -- -H 127.0.0.1 -p 3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open two windows: [http://127.0.0.1:3000/ems](http://127.0.0.1:3000/ems) and [http://127.0.0.1:3000/hospital](http://127.0.0.1:3000/hospital). Sign in with the same Medplum project account on both.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Demo script
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. Hospital empty queue + EMS signed in (header shows **WS open**).
+2. EMS: **Start voice** or **Open Incoming card** → hospital shows **Incoming** case.
+3. Speak / **Load demo handoff** → card fills (age, mechanism, blood pressure, HR, GCS, …); hospital updates live.
+4. EMS: **Confirm handoff** → badge **Confirmed**.
+5. Hospital: **Accept** → Medplum prep tasks; EMS gets acknowledgment (voice inject if connected).
+6. Hospital: **Request More Info** → pick topics → EMS checklist / agent ask → answer updates the card.
+7. Optional: **New patient** on EMS for a second concurrent case; **Request live connect** for a bridge ping (demo channel, not WebRTC).
 
-## Learn More
+## Screenshots (for submission)
 
-To learn more about Next.js, take a look at the following resources:
+Drop PNG/JPEG files into `docs/screenshots/` using these filenames, then the README preview below will render them.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| # | File | Capture this |
+|---|------|----------------|
+| 1 | `docs/screenshots/01-ems-incoming.png` | EMS active case with trauma card (blood pressure visible) + voice panel |
+| 2 | `docs/screenshots/02-hospital-queue.png` | Hospital case queue with 2+ cases, one selected |
+| 3 | `docs/screenshots/03-hospital-accept.png` | After Accept — Medplum prep tasks + labeled TraumaLink suggestions |
+| 4 | `docs/screenshots/04-request-info.png` | Request More Info topic picker open |
+| 5 | `docs/screenshots/05-dual-browser.png` | Side-by-side EMS + Hospital (or a wide crop of both) |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### Preview slots
 
-## Deploy on Vercel
+<!-- Add files under docs/screenshots/ — leave these markdown lines as-is -->
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+#### 1. EMS — Incoming trauma card
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+![EMS Incoming trauma card](docs/screenshots/01-ems-incoming.png)
+
+#### 2. Hospital — Multi-case queue
+
+![Hospital multi-case queue](docs/screenshots/02-hospital-queue.png)
+
+#### 3. Hospital — Accept + prep tasks
+
+![Hospital accept and Medplum prep tasks](docs/screenshots/03-hospital-accept.png)
+
+#### 4. Request More Info picker
+
+![Request More Info topic picker](docs/screenshots/04-request-info.png)
+
+#### 5. Dual-browser demo
+
+![EMS and Hospital side by side](docs/screenshots/05-dual-browser.png)
+
+## Provenance (for judges)
+
+| UI label | Source |
+|----------|--------|
+| Prep tasks | Medplum `Task` resources created on Accept |
+| Suggested next asks | TraumaLink client rules (`getMissingFields` + vital flags) — not Medplum, not voice AI |
+| Voice extraction | Deepgram Voice Agent function calling |
+| Live updates | Medplum `useSubscription` |
+
+## Project layout
+
+```
+src/app/ems/page.tsx          EMS multi-case UI
+src/app/hospital/page.tsx     Hospital ops board
+src/components/VoiceHandoff.tsx
+src/lib/fhir/handoff.ts       FHIR builders + channel helpers
+src/lib/trauma.ts             TraumaCard types + BP helpers
+src/app/api/deepgram/token    Short-lived Deepgram JWT
+docs/screenshots/             Submission screenshots (you add)
+```

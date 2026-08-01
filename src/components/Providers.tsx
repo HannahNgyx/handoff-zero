@@ -269,7 +269,7 @@ export function AppChrome({
     <TraumaLinkProviders>
       <div className="min-h-screen bg-[#0c1117] text-zinc-100">
         <header className="border-b border-zinc-800/80 px-6 py-4">
-          <div className="mx-auto flex max-w-3xl items-baseline justify-between gap-4">
+          <div className="mx-auto flex max-w-6xl items-baseline justify-between gap-4">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-teal-400/90">
                 TraumaLink
@@ -281,7 +281,7 @@ export function AppChrome({
             <ConnectionStatus />
           </div>
         </header>
-        <main className="mx-auto max-w-3xl px-6 py-8">
+        <main className="mx-auto max-w-6xl px-6 py-8">
           <AuthGate>{children}</AuthGate>
         </main>
       </div>

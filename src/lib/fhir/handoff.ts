@@ -18,6 +18,8 @@ export const TAG_SYSTEM = "https://traumatink.app/fhir/tag";
 export const TAG_HANDOFF = "prearrival-handoff";
 export const TAG_ACCEPTANCE = "acceptance-ack";
 export const TAG_INFO_REQUEST = "info-request";
+export const TAG_BRIDGE = "bridge-request";
+export const TAG_CHANNEL = "channel-message";
 export const TAG_ORAL_INTAKE = "oral-intake";
 export const SR_CODE_SYSTEM = "https://traumatink.app/fhir/CodeSystem/handoff";
 export const SR_CODE_TRANSFER = "hospital-transfer-request";
@@ -32,11 +34,73 @@ export const ORAL_INTAKE_CODING = {
 export const HANDOFF_SR_CRITERIA = `ServiceRequest?status=draft,active&_tag=${TAG_SYSTEM}|${TAG_HANDOFF}`;
 export const ACCEPTANCE_COMM_CRITERIA = `Communication?_tag=${TAG_SYSTEM}|${TAG_ACCEPTANCE}`;
 export const INFO_REQUEST_COMM_CRITERIA = `Communication?_tag=${TAG_SYSTEM}|${TAG_INFO_REQUEST}`;
+export const BRIDGE_COMM_CRITERIA = `Communication?_tag=${TAG_SYSTEM}|${TAG_BRIDGE}`;
+export const CHANNEL_COMM_CRITERIA = `Communication?_tag=${TAG_SYSTEM}|${TAG_CHANNEL}`;
 export const ORAL_INTAKE_OBS_CRITERIA = `Observation?_tag=${TAG_SYSTEM}|${TAG_ORAL_INTAKE}`;
 export const HANDOFF_COMM_CRITERIA = `Communication?_tag=${TAG_SYSTEM}|${TAG_HANDOFF}`;
 
+export type InfoTopicId =
+  | "last-oral-intake"
+  | "blood-type"
+  | "emergency-contact"
+  | "anticoagulants"
+  | "allergy"
+  | "custom";
+
+export const INFO_TOPICS: {
+  id: InfoTopicId;
+  label: string;
+  message: string;
+}[] = [
+  {
+    id: "last-oral-intake",
+    label: "Last oral intake",
+    message:
+      "The hospital needs the patient's last known oral intake. Please ask the paramedic now.",
+  },
+  {
+    id: "blood-type",
+    label: "Blood type",
+    message: "The hospital needs the patient's blood type if known.",
+  },
+  {
+    id: "emergency-contact",
+    label: "Emergency contact",
+    message: "The hospital needs an emergency contact name or phone number.",
+  },
+  {
+    id: "anticoagulants",
+    label: "Anticoagulants",
+    message: "The hospital needs confirmation of anticoagulant use.",
+  },
+  {
+    id: "allergy",
+    label: "Allergy clarification",
+    message: "The hospital needs allergy details clarified.",
+  },
+  {
+    id: "custom",
+    label: "Other / custom",
+    message: "The hospital has a custom information request. Please check the channel.",
+  },
+];
+
+export type ChannelParty = "hospital" | "ems";
+
+export type ChannelEntry = {
+  id: string;
+  type: "channel-message" | "bridge-request" | "info-request";
+  from?: ChannelParty;
+  message: string;
+  topics?: InfoTopicId[];
+  serviceRequestId?: string;
+  encounterId?: string;
+  createdAt: string;
+};
+
+/** @deprecated use INFO_TOPICS — kept for older callers */
 export const INFO_REQUEST_ORAL_INTAKE_MESSAGE =
-  "The hospital needs the patient's last known oral intake. Please ask the paramedic now.";
+  INFO_TOPICS.find((t) => t.id === "last-oral-intake")!.message;
 
 export const PREP_TASKS = [
   { description: "Prepare trauma bay", assignee: "Charge nurse" },
@@ -119,7 +183,7 @@ export async function loadActiveHandoffs(medplum: MedplumClient): Promise<Active
     status: "draft,active",
     _tag: `${TAG_SYSTEM}|${TAG_HANDOFF}`,
     _sort: "-_lastUpdated",
-    _count: "10",
+    _count: "25",
   });
 
   const handoffs: ActiveHandoff[] = [];
@@ -265,17 +329,43 @@ export async function loadOralIntake(
   return obs[0]?.valueString ?? null;
 }
 
-/** Hospital → EMS: ask for last oral intake via tagged Communication. */
+function partyRefs(handoff: ActiveHandoff) {
+  return {
+    patientRef: handoff.patientId
+      ? { reference: `Patient/${handoff.patientId}` }
+      : undefined,
+    encounterRef: handoff.encounterId
+      ? { reference: `Encounter/${handoff.encounterId}` }
+      : undefined,
+  };
+}
+
+function topicDefs(topics: InfoTopicId[]) {
+  const selected = topics.length ? topics : (["last-oral-intake"] as InfoTopicId[]);
+  const defs = selected.map(
+    (id) => INFO_TOPICS.find((t) => t.id === id) ?? INFO_TOPICS[0],
+  );
+  const labels = defs.map((d) => d.label);
+  const message =
+    defs.length === 1
+      ? defs[0].message
+      : `The hospital needs: ${labels.join(", ")}. Please ask the paramedic now.`;
+  return { selected, labels, message };
+}
+
+/** Hospital → EMS: ask for one or more info topics via tagged Communication. */
 export async function requestMoreInfo(
   medplum: MedplumClient,
   handoff: ActiveHandoff,
+  topics: InfoTopicId[] = ["last-oral-intake"],
+  customNote?: string,
 ): Promise<Communication> {
-  const patientRef = handoff.patientId
-    ? { reference: `Patient/${handoff.patientId}` }
-    : undefined;
-  const encounterRef = handoff.encounterId
-    ? { reference: `Encounter/${handoff.encounterId}` }
-    : undefined;
+  const { patientRef, encounterRef } = partyRefs(handoff);
+  const { selected, labels, message } = topicDefs(topics);
+  const finalMessage =
+    customNote?.trim() && selected.includes("custom")
+      ? `${message} Note: ${customNote.trim()}`
+      : message;
 
   return medplum.createResource<Communication>({
     resourceType: "Communication",
@@ -290,14 +380,177 @@ export async function requestMoreInfo(
       {
         contentString: JSON.stringify({
           type: "info-request",
-          topic: "last-oral-intake",
-          message: INFO_REQUEST_ORAL_INTAKE_MESSAGE,
+          topics: selected,
+          topic: selected[0],
+          labels,
+          message: finalMessage,
+          customNote: customNote?.trim() || undefined,
           serviceRequestId: handoff.serviceRequestId,
           encounterId: handoff.encounterId,
         }),
       },
     ],
   });
+}
+
+/** Either side requests a live radio/phone bridge (demo ping — not WebRTC). */
+export async function requestBridge(
+  medplum: MedplumClient,
+  handoff: ActiveHandoff,
+  from: ChannelParty,
+): Promise<Communication> {
+  const { patientRef, encounterRef } = partyRefs(handoff);
+  const who = from === "hospital" ? "Hospital" : "EMS";
+  const message = `${who} requests a live radio/phone connect for this case. Coordinate on channel.`;
+
+  return medplum.createResource<Communication>({
+    resourceType: "Communication",
+    meta: {
+      tag: metaTag({ code: TAG_BRIDGE, display: "Bridge request" }),
+    },
+    status: "in-progress",
+    category: [{ text: "Direct connect request" }],
+    subject: patientRef as Communication["subject"],
+    encounter: encounterRef,
+    payload: [
+      {
+        contentString: JSON.stringify({
+          type: "bridge-request",
+          from,
+          message,
+          serviceRequestId: handoff.serviceRequestId,
+          encounterId: handoff.encounterId,
+        }),
+      },
+    ],
+  });
+}
+
+/** Append a free-text message to the case direct channel. */
+export async function postChannelMessage(
+  medplum: MedplumClient,
+  handoff: ActiveHandoff,
+  from: ChannelParty,
+  text: string,
+): Promise<Communication> {
+  const trimmed = text.trim();
+  if (!trimmed) throw new Error("Message is empty");
+  const { patientRef, encounterRef } = partyRefs(handoff);
+
+  return medplum.createResource<Communication>({
+    resourceType: "Communication",
+    meta: {
+      tag: metaTag({ code: TAG_CHANNEL, display: "Channel message" }),
+    },
+    status: "completed",
+    category: [{ text: "Direct channel" }],
+    subject: patientRef as Communication["subject"],
+    encounter: encounterRef,
+    payload: [
+      {
+        contentString: JSON.stringify({
+          type: "channel-message",
+          from,
+          message: trimmed,
+          serviceRequestId: handoff.serviceRequestId,
+          encounterId: handoff.encounterId,
+        }),
+      },
+    ],
+  });
+}
+
+export async function loadCaseChannel(
+  medplum: MedplumClient,
+  encounterId: string | undefined,
+): Promise<ChannelEntry[]> {
+  if (!encounterId) return [];
+  const tags = [
+    `${TAG_SYSTEM}|${TAG_CHANNEL}`,
+    `${TAG_SYSTEM}|${TAG_BRIDGE}`,
+    `${TAG_SYSTEM}|${TAG_INFO_REQUEST}`,
+  ];
+  const entries: ChannelEntry[] = [];
+
+  for (const tag of tags) {
+    const comms = await medplum.searchResources("Communication", {
+      encounter: `Encounter/${encounterId}`,
+      _tag: tag,
+      _sort: "-_lastUpdated",
+      _count: "20",
+    });
+    for (const c of comms) {
+      const raw = c.payload?.[0]?.contentString;
+      if (!raw) continue;
+      try {
+        const parsed = JSON.parse(raw) as {
+          type?: ChannelEntry["type"];
+          from?: ChannelParty;
+          message?: string;
+          topics?: InfoTopicId[];
+          serviceRequestId?: string;
+          encounterId?: string;
+        };
+        if (!parsed.type || !parsed.message) continue;
+        entries.push({
+          id: c.id ?? crypto.randomUUID(),
+          type: parsed.type,
+          from: parsed.from,
+          message: parsed.message,
+          topics: parsed.topics,
+          serviceRequestId: parsed.serviceRequestId,
+          encounterId: parsed.encounterId ?? encounterId,
+          createdAt: c.meta?.lastUpdated ?? c.sent ?? new Date().toISOString(),
+        });
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  return entries.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export function parseInfoRequestPayload(raw: string): {
+  message: string;
+  topics: InfoTopicId[];
+  labels: string[];
+  serviceRequestId?: string;
+  encounterId?: string;
+} | null {
+  try {
+    const parsed = JSON.parse(raw) as {
+      type?: string;
+      message?: string;
+      topics?: InfoTopicId[];
+      topic?: InfoTopicId;
+      labels?: string[];
+      serviceRequestId?: string;
+      encounterId?: string;
+    };
+    if (parsed.type !== "info-request" || !parsed.message) return null;
+    const topics =
+      parsed.topics?.length
+        ? parsed.topics
+        : parsed.topic
+          ? [parsed.topic]
+          : (["last-oral-intake"] as InfoTopicId[]);
+    const labels =
+      parsed.labels?.length
+        ? parsed.labels
+        : topics.map(
+            (id) => INFO_TOPICS.find((t) => t.id === id)?.label ?? id,
+          );
+    return {
+      message: parsed.message,
+      topics,
+      labels,
+      serviceRequestId: parsed.serviceRequestId,
+      encounterId: parsed.encounterId,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** EMS → hospital: write last oral intake as Observation after voice update_field. */

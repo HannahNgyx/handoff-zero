@@ -4,14 +4,23 @@ import { AppChrome } from "@/components/Providers";
 import { VoiceHandoff } from "@/components/VoiceHandoff";
 import {
   ACCEPTANCE_COMM_CRITERIA,
+  BRIDGE_COMM_CRITERIA,
+  CHANNEL_COMM_CRITERIA,
   confirmHandoff,
   createDraftHandoff,
   INFO_REQUEST_COMM_CRITERIA,
+  loadCaseChannel,
+  parseInfoRequestPayload,
   patchHandoffCard,
+  postChannelMessage,
+  requestBridge,
   writeOralIntakeObservation,
+  type ChannelEntry,
 } from "@/lib/fhir/handoff";
 import {
   applyHandoffText,
+  caseShortId,
+  caseTitle,
   DEMO_TRAUMA_CARD,
   EMPTY_TRAUMA_CARD,
   formatBp,
@@ -24,7 +33,14 @@ import {
 } from "@/lib/trauma";
 import type { Bundle, Communication } from "@medplum/fhirtypes";
 import { useMedplum, useSubscription } from "@medplum/react-hooks";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+type OpenInfoAsk = {
+  id: string;
+  labels: string[];
+  message: string;
+  serviceRequestId?: string;
+};
 
 function Flag({ value }: { value: string | null }) {
   if (!value) return null;
@@ -37,10 +53,10 @@ function Flag({ value }: { value: string | null }) {
 
 function TraumaCardView({
   card,
-  handoffStatus,
+  handoff,
 }: {
   card: TraumaCard;
-  handoffStatus: ActiveHandoff["handoffStatus"] | null;
+  handoff: ActiveHandoff | null;
 }) {
   const missing = getMissingFields(card);
   const hasAny =
@@ -54,18 +70,27 @@ function TraumaCardView({
       <div className="flex items-start justify-between gap-4 border-b border-zinc-800 pb-4">
         <div>
           <h2 className="text-sm font-semibold uppercase tracking-[0.15em] text-amber-400/95">
-            Incoming trauma
+            Active case
+            {handoff ? (
+              <span className="ml-2 font-mono text-[10px] text-zinc-500">
+                · {caseShortId(handoff)}
+              </span>
+            ) : null}
           </h2>
           {hasAny && (
             <p className="mt-1 text-sm text-zinc-400">{patientLine(card)}</p>
           )}
-          {handoffStatus && (
+          {handoff && (
             <p
               className={`mt-2 text-[10px] font-semibold uppercase tracking-wider ${
-                handoffStatus === "confirmed" ? "text-teal-400" : "text-amber-400"
+                handoff.handoffStatus === "confirmed"
+                  ? "text-teal-400"
+                  : "text-amber-400"
               }`}
             >
-              {handoffStatus === "confirmed" ? "Confirmed" : "Incoming (live)"}
+              {handoff.handoffStatus === "confirmed"
+                ? "Confirmed"
+                : "Incoming (live)"}
             </p>
           )}
         </div>
@@ -79,15 +104,19 @@ function TraumaCardView({
 
       {!hasAny ? (
         <p className="mt-6 text-sm text-zinc-500">
-          Start voice to open an Incoming hospital card, then speak the handoff
-          (or load the demo). Confirm when the packet looks right.
+          Start voice or Open Incoming for this case, then speak / paste the
+          handoff. Use New patient for a second case.
         </p>
       ) : (
         <dl className="mt-4 space-y-2.5 font-mono text-sm">
           <div className="flex justify-between gap-4">
-            <dt className="text-zinc-500">BP</dt>
+            <dt className="text-zinc-500">
+              Blood pressure
+              <span className="ml-1 text-[10px] text-zinc-600">(BP)</span>
+            </dt>
             <dd>
               {formatBp(card)}
+              <span className="ml-1 text-[10px] text-zinc-600">mmHg</span>
               <Flag value={flagBp(card.vitals.bpSystolic)} />
             </dd>
           </div>
@@ -117,8 +146,18 @@ function TraumaCardView({
             <dd>{card.anticoagulants ?? "—"}</dd>
           </div>
           <div className="flex justify-between gap-4">
+            <dt className="text-zinc-500">Blood type</dt>
+            <dd className="font-semibold uppercase text-teal-200">
+              {card.bloodType ?? "—"}
+            </dd>
+          </div>
+          <div className="flex justify-between gap-4">
             <dt className="text-zinc-500">Last oral intake</dt>
             <dd>{card.lastOralIntake ?? "—"}</dd>
+          </div>
+          <div className="flex justify-between gap-4">
+            <dt className="text-zinc-500">Emergency contact</dt>
+            <dd className="text-right">{card.emergencyContact ?? "—"}</dd>
           </div>
         </dl>
       )}
@@ -149,73 +188,179 @@ export default function EmsPage() {
 
 function EmsContent() {
   const medplum = useMedplum();
-  const [card, setCard] = useState<TraumaCard>(EMPTY_TRAUMA_CARD);
+  const [cases, setCases] = useState<ActiveHandoff[]>([]);
+  const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
+  const [cardsById, setCardsById] = useState<Record<string, TraumaCard>>({});
+  const [localCard, setLocalCard] = useState<TraumaCard>(EMPTY_TRAUMA_CARD);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
-  const [lastHandoff, setLastHandoff] = useState<ActiveHandoff | null>(null);
   const [injectMessage, setInjectMessage] = useState<string | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
   const [reportText, setReportText] = useState("");
-  const wroteOralRef = useRef<string | null>(null);
-  const handoffRef = useRef<ActiveHandoff | null>(null);
+  const [openAsks, setOpenAsks] = useState<OpenInfoAsk[]>([]);
+  const [channel, setChannel] = useState<ChannelEntry[]>([]);
+  const [channelDraft, setChannelDraft] = useState("");
+  const wroteOralRef = useRef<Record<string, string>>({});
   const patchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const casesRef = useRef(cases);
+  casesRef.current = cases;
 
-  handoffRef.current = lastHandoff;
+  const activeCase = useMemo(
+    () => cases.find((c) => c.id === activeCaseId) ?? null,
+    [cases, activeCaseId],
+  );
+
+  const card = activeCaseId
+    ? (cardsById[activeCaseId] ?? activeCase?.card ?? localCard)
+    : localCard;
+
+  const setCard = useCallback(
+    (next: TraumaCard) => {
+      if (activeCaseId) {
+        setCardsById((m) => ({ ...m, [activeCaseId]: next }));
+        setCases((list) =>
+          list.map((c) => (c.id === activeCaseId ? { ...c, card: next } : c)),
+        );
+      } else {
+        setLocalCard(next);
+      }
+    },
+    [activeCaseId],
+  );
 
   const hasData =
     card.age != null || card.mechanism || card.vitals.bpSystolic != null;
 
-  useSubscription(
-    ACCEPTANCE_COMM_CRITERIA,
-    (bundle: Bundle) => {
-      const entry = bundle.entry?.find((e) => e.resource?.resourceType === "Communication");
-      const comm = entry?.resource as Communication | undefined;
-      const raw = comm?.payload?.[0]?.contentString;
-      if (!raw) return;
+  const refreshChannel = useCallback(
+    async (encounterId: string | undefined) => {
+      if (!encounterId) {
+        setChannel([]);
+        return;
+      }
       try {
-        const parsed = JSON.parse(raw) as { type?: string; message?: string };
-        if (parsed.type === "acceptance" && parsed.message) {
-          setInjectMessage(parsed.message);
-          setBanner(parsed.message);
-          setStatus("Hospital accepted — see acknowledgment below.");
-        }
+        setChannel(await loadCaseChannel(medplum, encounterId));
       } catch {
         /* ignore */
       }
     },
+    [medplum],
   );
 
-  useSubscription(
-    INFO_REQUEST_COMM_CRITERIA,
-    (bundle: Bundle) => {
-      const entry = bundle.entry?.find((e) => e.resource?.resourceType === "Communication");
-      const comm = entry?.resource as Communication | undefined;
-      const raw = comm?.payload?.[0]?.contentString;
-      if (!raw) return;
-      try {
-        const parsed = JSON.parse(raw) as { type?: string; message?: string };
-        if (parsed.type === "info-request" && parsed.message) {
-          setInjectMessage(parsed.message);
-          setBanner(parsed.message);
-          setStatus("Hospital requested more info — agent will ask when voice is connected.");
-        }
-      } catch {
-        /* ignore */
-      }
-    },
-  );
-
-  // Debounced live patch while Incoming (and after Confirm for late field updates).
   useEffect(() => {
-    const handoff = handoffRef.current;
+    void refreshChannel(activeCase?.encounterId);
+  }, [activeCase?.encounterId, refreshChannel]);
+
+  useSubscription(ACCEPTANCE_COMM_CRITERIA, (bundle: Bundle) => {
+    const entry = bundle.entry?.find((e) => e.resource?.resourceType === "Communication");
+    const comm = entry?.resource as Communication | undefined;
+    const raw = comm?.payload?.[0]?.contentString;
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as {
+        type?: string;
+        message?: string;
+        serviceRequestId?: string;
+      };
+      if (parsed.type !== "acceptance" || !parsed.message) return;
+      const match = casesRef.current.find(
+        (c) =>
+          !parsed.serviceRequestId ||
+          c.serviceRequestId === parsed.serviceRequestId,
+      );
+      if (match && activeCaseId && match.id !== activeCaseId) {
+        setStatus(
+          `Hospital accepted case ${caseShortId(match)} — switch to that case.`,
+        );
+        return;
+      }
+      setInjectMessage(parsed.message);
+      setBanner(parsed.message);
+      setStatus("Hospital accepted — see acknowledgment below.");
+    } catch {
+      /* ignore */
+    }
+  });
+
+  useSubscription(INFO_REQUEST_COMM_CRITERIA, (bundle: Bundle) => {
+    const entry = bundle.entry?.find((e) => e.resource?.resourceType === "Communication");
+    const comm = entry?.resource as Communication | undefined;
+    const raw = comm?.payload?.[0]?.contentString;
+    if (!raw) return;
+    const parsed = parseInfoRequestPayload(raw);
+    if (!parsed) return;
+    const match = casesRef.current.find(
+      (c) =>
+        !parsed.serviceRequestId ||
+        c.serviceRequestId === parsed.serviceRequestId,
+    );
+    const ask: OpenInfoAsk = {
+      id: comm?.id ?? crypto.randomUUID(),
+      labels: parsed.labels,
+      message: parsed.message,
+      serviceRequestId: parsed.serviceRequestId,
+    };
+    setOpenAsks((prev) => {
+      if (prev.some((a) => a.id === ask.id)) return prev;
+      return [...prev, ask];
+    });
+    if (match && activeCaseId && match.id !== activeCaseId) {
+      setStatus(
+        `Info request on case ${caseShortId(match)}: ${parsed.labels.join(", ")}`,
+      );
+      return;
+    }
+    setInjectMessage(parsed.message);
+    setBanner(parsed.message);
+    setStatus("Hospital requested more info — agent will ask when voice is on.");
+  });
+
+  useSubscription(BRIDGE_COMM_CRITERIA, (bundle: Bundle) => {
+    const entry = bundle.entry?.find((e) => e.resource?.resourceType === "Communication");
+    const comm = entry?.resource as Communication | undefined;
+    const raw = comm?.payload?.[0]?.contentString;
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as {
+        type?: string;
+        message?: string;
+        from?: string;
+        serviceRequestId?: string;
+      };
+      if (parsed.type !== "bridge-request" || !parsed.message) return;
+      if (parsed.from === "ems") return;
+      const match = casesRef.current.find(
+        (c) =>
+          !parsed.serviceRequestId ||
+          c.serviceRequestId === parsed.serviceRequestId,
+      );
+      if (match && activeCaseId && match.id !== activeCaseId) {
+        setStatus(`Live connect request on case ${caseShortId(match)}`);
+        return;
+      }
+      setInjectMessage(parsed.message);
+      setBanner(parsed.message);
+      setStatus("Hospital requested live radio/phone connect.");
+      if (activeCase?.encounterId) void refreshChannel(activeCase.encounterId);
+    } catch {
+      /* ignore */
+    }
+  });
+
+  useSubscription(CHANNEL_COMM_CRITERIA, () => {
+    if (activeCase?.encounterId) void refreshChannel(activeCase.encounterId);
+  });
+
+  // Debounced live patch for active case only.
+  useEffect(() => {
+    const handoff = activeCase;
     if (!handoff?.communicationId && !handoff?.encounterId) return;
     if (patchTimer.current) clearTimeout(patchTimer.current);
     patchTimer.current = setTimeout(() => {
-      const current = handoffRef.current;
-      if (!current) return;
-      void patchHandoffCard(medplum, current, card)
+      void patchHandoffCard(medplum, handoff, card)
         .then((next) => {
-          setLastHandoff(next);
+          setCases((list) =>
+            list.map((c) => (c.id === next.id ? { ...next, card } : c)),
+          );
         })
         .catch((err) => {
           setStatus(err instanceof Error ? err.message : "Live patch failed");
@@ -224,76 +369,115 @@ function EmsContent() {
     return () => {
       if (patchTimer.current) clearTimeout(patchTimer.current);
     };
-  }, [card, medplum, lastHandoff?.id]);
+  }, [card, medplum, activeCase]);
 
   useEffect(() => {
     const value = card.lastOralIntake?.trim();
-    if (!value || !lastHandoff?.encounterId || !lastHandoff.patientId) return;
-    if (wroteOralRef.current === value) return;
-    wroteOralRef.current = value;
+    const handoff = activeCase;
+    if (!value || !handoff?.encounterId || !handoff.patientId) return;
+    const key = `${handoff.id}:${value}`;
+    if (wroteOralRef.current[key]) return;
+    wroteOralRef.current[key] = value;
     void (async () => {
       try {
-        await writeOralIntakeObservation(medplum, lastHandoff, value);
-        setStatus(`Oral intake sent to hospital: ${value}`);
+        await writeOralIntakeObservation(medplum, handoff, value);
+        setStatus(`Oral intake sent: ${value}`);
+        setOpenAsks((asks) =>
+          asks.filter(
+            (a) =>
+              a.serviceRequestId !== handoff.serviceRequestId ||
+              !a.labels.some((l) => /oral/i.test(l)),
+          ),
+        );
       } catch (err) {
-        wroteOralRef.current = null;
+        delete wroteOralRef.current[key];
         setStatus(err instanceof Error ? err.message : "Failed to write oral intake");
       }
     })();
-  }, [card.lastOralIntake, lastHandoff, medplum]);
+  }, [card.lastOralIntake, activeCase, medplum]);
+
+  // Clear satisfied info-asks when blood type lands on the card (patched live to hospital).
+  useEffect(() => {
+    if (!card.bloodType?.trim() || !activeCase?.serviceRequestId) return;
+    setOpenAsks((asks) =>
+      asks.filter(
+        (a) =>
+          a.serviceRequestId !== activeCase.serviceRequestId ||
+          !a.labels.some((l) => /blood/i.test(l)),
+      ),
+    );
+  }, [card.bloodType, activeCase?.serviceRequestId]);
 
   const openIncoming = useCallback(async () => {
-    if (handoffRef.current) {
-      setStatus("Hospital already has this Incoming card.");
-      return handoffRef.current;
+    if (activeCase) {
+      setStatus(`Case ${caseShortId(activeCase)} already open at hospital.`);
+      return activeCase;
     }
     try {
       const handoff = await createDraftHandoff(medplum, {
         ...card,
         etaCapturedAt: card.etaCapturedAt ?? new Date().toISOString(),
       });
-      setLastHandoff(handoff);
-      setStatus(
-        `Incoming handoff opened at hospital${
-          handoff.serviceRequestId
-            ? ` · ServiceRequest/${handoff.serviceRequestId}`
-            : ""
-        }.`,
-      );
+      setCases((list) => [...list, handoff]);
+      setActiveCaseId(handoff.id);
+      setCardsById((m) => ({ ...m, [handoff.id]: card }));
+      setStatus(`Incoming opened · Case ${caseShortId(handoff)}`);
       return handoff;
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "Failed to open Incoming handoff");
+      setStatus(err instanceof Error ? err.message : "Failed to open Incoming");
       return null;
     }
-  }, [medplum, card]);
+  }, [medplum, card, activeCase]);
 
   const onVoiceStarted = useCallback(async () => {
     await openIncoming();
   }, [openIncoming]);
 
+  async function onNewPatient() {
+    setBusy(true);
+    setStatus(null);
+    setInjectMessage(null);
+    setBanner(null);
+    setReportText("");
+    setLocalCard({ ...EMPTY_TRAUMA_CARD });
+    try {
+      const empty = {
+        ...EMPTY_TRAUMA_CARD,
+        etaCapturedAt: new Date().toISOString(),
+      };
+      const handoff = await createDraftHandoff(medplum, empty);
+      setCases((list) => [...list, handoff]);
+      setActiveCaseId(handoff.id);
+      setCardsById((m) => ({ ...m, [handoff.id]: empty }));
+      setStatus(`New patient · Case ${caseShortId(handoff)} (Incoming at hospital)`);
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "New patient failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onConfirm() {
     setBusy(true);
     setStatus(null);
     try {
-      let handoff = lastHandoff;
+      let handoff = activeCase;
       if (!handoff) {
         handoff = await createDraftHandoff(medplum, {
           ...card,
           etaCapturedAt: card.etaCapturedAt ?? new Date().toISOString(),
         });
+        setCases((list) => [...list, handoff!]);
+        setActiveCaseId(handoff.id);
       }
       const confirmed = await confirmHandoff(medplum, handoff, {
         ...card,
         etaCapturedAt: card.etaCapturedAt ?? new Date().toISOString(),
       });
-      setLastHandoff(confirmed);
-      setStatus(
-        `Handoff confirmed${
-          confirmed.serviceRequestId
-            ? ` · ServiceRequest/${confirmed.serviceRequestId}`
-            : ""
-        }.`,
+      setCases((list) =>
+        list.map((c) => (c.id === confirmed.id ? { ...confirmed, card } : c)),
       );
+      setStatus(`Confirmed · Case ${caseShortId(confirmed)}`);
     } catch (err) {
       setStatus(err instanceof Error ? err.message : "Confirm failed");
     } finally {
@@ -301,125 +485,251 @@ function EmsContent() {
     }
   }
 
-  const onCardChange = useCallback((next: TraumaCard) => {
-    setCard(next);
-  }, []);
+  async function onBridge() {
+    const handoff = activeCase ?? (await openIncoming());
+    if (!handoff) return;
+    setBusy(true);
+    try {
+      await requestBridge(medplum, handoff, "ems");
+      setStatus("Live connect requested to hospital.");
+      await refreshChannel(handoff.encounterId);
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Bridge failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onSendChannel() {
+    const handoff = activeCase;
+    if (!handoff) return;
+    setBusy(true);
+    try {
+      await postChannelMessage(medplum, handoff, "ems", channelDraft);
+      setChannelDraft("");
+      await refreshChannel(handoff.encounterId);
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Send failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const caseAsks = openAsks.filter(
+    (a) =>
+      !activeCase?.serviceRequestId ||
+      a.serviceRequestId === activeCase.serviceRequestId,
+  );
 
   return (
-    <>
-      <TraumaCardView
-        card={card}
-        handoffStatus={lastHandoff?.handoffStatus ?? null}
-      />
-
-      <div className="mt-4">
-        <VoiceHandoff
-          card={card}
-          onCardChange={onCardChange}
-          injectMessage={injectMessage}
-          onVoiceStarted={onVoiceStarted}
-        />
-      </div>
-
-      <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900/30 p-4">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.15em] text-zinc-500">
-          Text fallback
-        </p>
-        <p className="mt-1 text-xs text-zinc-500">
-          Use if mic/voice fails. Opens Incoming without voice, then parses the
-          report into the card.
-        </p>
-        <textarea
-          value={reportText}
-          onChange={(e) => setReportText(e.target.value)}
-          rows={3}
-          placeholder='e.g. Incoming 27-year-old female, motorcycle collision. BP 92 over 60, heart rate 128, GCS 13…'
-          className="mt-3 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600"
-        />
-        <div className="mt-2 flex flex-wrap gap-2">
+    <div className="grid gap-6 lg:grid-cols-[220px_minmax(0,1fr)]">
+      <aside>
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
+            My cases
+          </p>
           <button
             type="button"
             disabled={busy}
-            onClick={() => void openIncoming()}
-            className="rounded-md border border-zinc-600 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+            onClick={() => void onNewPatient()}
+            className="rounded border border-zinc-700 px-2 py-0.5 text-[10px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
           >
-            Open Incoming card
+            New patient
+          </button>
+        </div>
+        <ul className="mt-3 space-y-1">
+          {cases.length === 0 ? (
+            <li className="rounded-md border border-dashed border-zinc-800 px-3 py-4 text-center text-xs text-zinc-600">
+              No open cases yet
+            </li>
+          ) : (
+            cases.map((c) => {
+              const active = c.id === activeCaseId;
+              const cCard = cardsById[c.id] ?? c.card;
+              return (
+                <li key={c.id}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveCaseId(c.id);
+                      setLocalCard(cardsById[c.id] ?? c.card);
+                    }}
+                    className={`w-full rounded-md border px-3 py-2 text-left text-sm ${
+                      active
+                        ? "border-teal-600/60 bg-teal-950/30 ring-1 ring-teal-700/40"
+                        : "border-zinc-800 bg-zinc-900/40 hover:border-zinc-700"
+                    }`}
+                  >
+                    <span className="font-mono text-[10px] text-zinc-500">
+                      {caseShortId(c)} · {c.handoffStatus}
+                    </span>
+                    <p className="mt-1 truncate text-zinc-200">
+                      {caseTitle({ ...c, card: cCard })}
+                    </p>
+                  </button>
+                </li>
+              );
+            })
+          )}
+        </ul>
+      </aside>
+
+      <div>
+        <TraumaCardView card={card} handoff={activeCase} />
+
+        {caseAsks.length > 0 && (
+          <div className="mt-4 rounded-lg border border-amber-800/40 bg-amber-950/20 p-4">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-amber-300">
+              Open hospital asks
+            </p>
+            <ul className="mt-2 space-y-1 text-sm text-amber-100/90">
+              {caseAsks.map((a) => (
+                <li key={a.id}>• {a.labels.join(", ")}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <div className="mt-4">
+          <VoiceHandoff
+            card={card}
+            onCardChange={setCard}
+            injectMessage={injectMessage}
+            onVoiceStarted={onVoiceStarted}
+          />
+        </div>
+
+        <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900/30 p-4">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.15em] text-zinc-500">
+            Text fallback
+          </p>
+          <textarea
+            value={reportText}
+            onChange={(e) => setReportText(e.target.value)}
+            rows={3}
+            placeholder="Paste handoff report…"
+            className="mt-3 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600"
+          />
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void openIncoming()}
+              className="rounded-md border border-zinc-600 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+            >
+              Open Incoming card
+            </button>
+            <button
+              type="button"
+              disabled={busy || !reportText.trim()}
+              onClick={() => {
+                const next = applyHandoffText(card, reportText);
+                setCard(next);
+                setStatus("Applied text to active case.");
+                if (!activeCase) void openIncoming();
+              }}
+              className="rounded-md border border-zinc-600 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+            >
+              Apply text to card
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900/30 p-4">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.15em] text-zinc-500">
+            Direct channel
+          </p>
+          <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto font-mono text-xs text-zinc-400">
+            {channel.length === 0 ? (
+              <li className="text-zinc-600">No messages for this case.</li>
+            ) : (
+              channel.map((m) => (
+                <li key={m.id}>
+                  <span className="text-zinc-600">
+                    [{m.type}
+                    {m.from ? ` · ${m.from}` : ""}]
+                  </span>{" "}
+                  {m.message}
+                </li>
+              ))
+            )}
+          </ul>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <input
+              value={channelDraft}
+              onChange={(e) => setChannelDraft(e.target.value)}
+              placeholder="Message hospital…"
+              disabled={!activeCase}
+              className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-3 py-1.5 text-sm disabled:opacity-50"
+            />
+            <button
+              type="button"
+              disabled={busy || !activeCase || !channelDraft.trim()}
+              onClick={() => void onSendChannel()}
+              className="rounded-md border border-zinc-600 px-3 py-1.5 text-sm disabled:opacity-50"
+            >
+              Send
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void onBridge()}
+              className="rounded-md border border-sky-800/60 px-3 py-1.5 text-sm text-sky-100 disabled:opacity-50"
+            >
+              Request live connect
+            </button>
+          </div>
+        </div>
+
+        {banner && (
+          <div
+            className="mt-4 rounded-md border border-teal-700/50 bg-teal-950/40 px-4 py-3 text-sm text-teal-100"
+            role="status"
+          >
+            {banner}
+          </div>
+        )}
+
+        <div className="mt-6 flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              const demo = {
+                ...DEMO_TRAUMA_CARD,
+                etaCapturedAt: new Date().toISOString(),
+              };
+              setCard(demo);
+              setReportText(
+                "Incoming 27-year-old female, motorcycle collision. Blood pressure 92 over 60, heart rate 128, GCS 13. Possible left femur fracture. Allergic to penicillin. No known anticoagulants. ETA six minutes.",
+              );
+              setStatus(null);
+              setInjectMessage(null);
+              setBanner(null);
+            }}
+            className="rounded-md bg-zinc-800 px-4 py-2.5 text-sm font-medium text-zinc-100 hover:bg-zinc-700"
+          >
+            Load demo handoff
           </button>
           <button
             type="button"
-            disabled={busy || !reportText.trim()}
-            onClick={() => {
-              const next = applyHandoffText(card, reportText);
-              setCard(next);
-              setStatus("Applied text to trauma card (hospital updates via live patch).");
-              if (!handoffRef.current) void openIncoming();
-            }}
-            className="rounded-md border border-zinc-600 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+            disabled={!hasData || busy || activeCase?.handoffStatus === "confirmed"}
+            onClick={() => void onConfirm()}
+            className="rounded-md border border-teal-600/80 bg-teal-700/30 px-4 py-2.5 text-sm font-medium text-teal-100 enabled:hover:bg-teal-700/50 disabled:cursor-not-allowed disabled:border-zinc-700 disabled:bg-transparent disabled:text-zinc-500"
           >
-            Apply text to card
+            {busy
+              ? "Confirming…"
+              : activeCase?.handoffStatus === "confirmed"
+                ? "Confirmed"
+                : "Confirm handoff"}
           </button>
         </div>
+
+        {status && (
+          <p className="mt-4 text-sm text-teal-300/90" role="status">
+            {status}
+          </p>
+        )}
       </div>
-
-      {banner && (
-        <div
-          className="mt-4 rounded-md border border-teal-700/50 bg-teal-950/40 px-4 py-3 text-sm text-teal-100"
-          role="status"
-        >
-          {banner}
-        </div>
-      )}
-
-      <div className="mt-6 flex flex-wrap gap-3">
-        <button
-          type="button"
-          onClick={() => {
-            setCard({ ...DEMO_TRAUMA_CARD, etaCapturedAt: new Date().toISOString() });
-            setReportText(
-              "Incoming 27-year-old female, motorcycle collision. Blood pressure 92 over 60, heart rate 128, GCS 13. Possible left femur fracture. Allergic to penicillin. No known anticoagulants. ETA six minutes.",
-            );
-            setStatus(null);
-            setInjectMessage(null);
-            setBanner(null);
-            wroteOralRef.current = null;
-            // Keep lastHandoff so demo fill patches the open Incoming card.
-          }}
-          className="rounded-md bg-zinc-800 px-4 py-2.5 text-sm font-medium text-zinc-100 hover:bg-zinc-700"
-        >
-          Load demo handoff
-        </button>
-        <button
-          type="button"
-          disabled={!hasData || busy || lastHandoff?.handoffStatus === "confirmed"}
-          onClick={() => void onConfirm()}
-          className="rounded-md border border-teal-600/80 bg-teal-700/30 px-4 py-2.5 text-sm font-medium text-teal-100 enabled:hover:bg-teal-700/50 disabled:cursor-not-allowed disabled:border-zinc-700 disabled:bg-transparent disabled:text-zinc-500"
-        >
-          {busy
-            ? "Confirming…"
-            : lastHandoff?.handoffStatus === "confirmed"
-              ? "Confirmed"
-              : "Confirm handoff"}
-        </button>
-      </div>
-
-      {status && (
-        <p className="mt-4 text-sm text-teal-300/90" role="status">
-          {status}
-        </p>
-      )}
-      {lastHandoff && (
-        <p className="mt-1 font-mono text-xs text-zinc-500">
-          {lastHandoff.handoffStatus}
-          {lastHandoff.serviceRequestId
-            ? ` · ServiceRequest/${lastHandoff.serviceRequestId}`
-            : ""}
-        </p>
-      )}
-
-      <p className="mt-8 text-xs text-zinc-600">
-        Start voice → hospital Incoming card. Live patches follow speech. Confirm
-        promotes the handoff to Confirmed.
-      </p>
-    </>
+    </div>
   );
 }

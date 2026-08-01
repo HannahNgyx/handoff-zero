@@ -35,6 +35,37 @@ type TraumaArgs = {
   value?: string;
 };
 
+const FIELD_ALIASES: Record<string, keyof TraumaCard> = {
+  bloodtype: "bloodType",
+  "blood type": "bloodType",
+  blood_type: "bloodType",
+  lastoralintake: "lastOralIntake",
+  "last oral intake": "lastOralIntake",
+  oralintake: "lastOralIntake",
+  emergencycontact: "emergencyContact",
+  "emergency contact": "emergencyContact",
+  allergy: "allergy",
+  anticoagulants: "anticoagulants",
+  injury: "injury",
+  mechanism: "mechanism",
+};
+
+function normalizeFieldKey(field: string): keyof TraumaCard | null {
+  const direct = field as keyof TraumaCard;
+  if (
+    direct === "bloodType" ||
+    direct === "lastOralIntake" ||
+    direct === "emergencyContact" ||
+    direct === "allergy" ||
+    direct === "anticoagulants" ||
+    direct === "injury" ||
+    direct === "mechanism"
+  ) {
+    return direct;
+  }
+  return FIELD_ALIASES[field.toLowerCase().trim()] ?? null;
+}
+
 export function applyTraumaArgs(card: TraumaCard, raw: TraumaArgs): TraumaCard {
   return {
     ...card,
@@ -50,7 +81,9 @@ export function applyTraumaArgs(card: TraumaCard, raw: TraumaArgs): TraumaCard {
     injury: raw.injury ?? card.injury,
     allergy: raw.allergy ?? card.allergy,
     anticoagulants: raw.anticoagulants ?? card.anticoagulants,
-    bloodType: raw.bloodType ?? card.bloodType,
+    bloodType: raw.bloodType
+      ? String(raw.bloodType).trim().toUpperCase()
+      : card.bloodType,
     lastOralIntake: raw.lastOralIntake ?? card.lastOralIntake,
     emergencyContact: raw.emergencyContact ?? card.emergencyContact,
     etaMinutes: raw.etaMinutes ?? card.etaMinutes,
@@ -60,9 +93,11 @@ export function applyTraumaArgs(card: TraumaCard, raw: TraumaArgs): TraumaCard {
 
 const AGENT_PROMPT = `You are TraumaLink, an EMS pre-arrival handoff coordinator speaking with a paramedic.
 Extract structured trauma data using update_trauma_card whenever you hear demographics, vitals, injuries, allergies, anticoagulants, or ETA.
+When you hear blood pressure (e.g. "92 over 60"), always set both bpSystolic and bpDiastolic.
 Always speak a short spoken reply after tool calls (one sentence). Never stay silent after updating the card.
 After updating, call get_missing_fields and ask for at most one missing clinical detail if urgent (prefer last oral intake).
-Do not invent values. Use update_field when the paramedic answers a follow-up.
+Do not invent values. Use update_field when the paramedic answers a follow-up (field names: bloodType, lastOralIntake, emergencyContact, allergy, anticoagulants).
+When they say a blood type like O positive or A-, call update_field with field bloodType.
 Ignore background noise, sirens, and radio static — only react to clear speech.`;
 
 function buildAgentConfig(): AgentSessionConfig {
@@ -325,14 +360,22 @@ export function VoiceHandoff({
     }
 
     if (fn.name === "update_field" && args.field && args.value != null) {
+      const fieldKey = normalizeFieldKey(args.field);
+      if (!fieldKey) {
+        return JSON.stringify({ error: `Unknown field ${args.field}` });
+      }
+      const value =
+        fieldKey === "bloodType"
+          ? String(args.value).trim().toUpperCase()
+          : String(args.value);
       const next: TraumaCard = {
         ...cardRef.current,
-        [args.field]: args.value,
+        [fieldKey]: value,
         etaCapturedAt: cardRef.current.etaCapturedAt ?? new Date().toISOString(),
       };
       cardRef.current = next;
       onCardChangeRef.current(next);
-      return JSON.stringify({ ok: true, field: args.field, value: args.value });
+      return JSON.stringify({ ok: true, field: fieldKey, value });
     }
 
     return JSON.stringify({ error: `Unknown function ${fn.name}` });
