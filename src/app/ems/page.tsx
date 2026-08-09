@@ -1,6 +1,7 @@
 "use client";
 
 import { AppChrome } from "@/components/Providers";
+import { EtaCountdown } from "@/components/EtaCountdown";
 import { VoiceHandoff } from "@/components/VoiceHandoff";
 import {
   ACCEPTANCE_COMM_CRITERIA,
@@ -94,12 +95,7 @@ function TraumaCardView({
             </p>
           )}
         </div>
-        <p className="font-mono text-sm text-zinc-300">
-          ETA{" "}
-          {card.etaMinutes != null
-            ? `${String(card.etaMinutes).padStart(2, "0")}:00`
-            : "—"}
-        </p>
+        <EtaCountdown card={card} />
       </div>
 
       {!hasAny ? (

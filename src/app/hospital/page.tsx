@@ -1,6 +1,7 @@
 "use client";
 
 import { AppChrome } from "@/components/Providers";
+import { EtaCountdown } from "@/components/EtaCountdown";
 import {
   acceptHandoff,
   BRIDGE_COMM_CRITERIA,
@@ -197,12 +198,7 @@ function CaseDetail({
             </p>
           )}
         </div>
-        <p className="font-mono text-sm text-zinc-300">
-          ETA{" "}
-          {card.etaMinutes != null
-            ? `${String(card.etaMinutes).padStart(2, "0")}:00`
-            : "—"}
-        </p>
+        <EtaCountdown card={card} />
       </div>
 
       <dl className="mt-4 space-y-2.5 font-mono text-sm">
@@ -631,7 +627,7 @@ function HospitalContent() {
                     </div>
                     <p className="mt-1 truncate text-zinc-200">{caseTitle(h)}</p>
                     <p className="mt-0.5 font-mono text-[10px] text-zinc-500">
-                      ETA {h.card.etaMinutes ?? "—"}
+                      <EtaCountdown card={h.card} compact />
                       {bp ? ` · BP ${bp}` : ""}
                       {hr ? ` · HR ${hr}` : ""}
                     </p>

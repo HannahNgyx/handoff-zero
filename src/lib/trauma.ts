@@ -105,7 +105,6 @@ export function flagHr(hr: number | null): VitalFlag {
   return null;
 }
 
-/** Blood pressure (BP) as systolic/diastolic mmHg — shows partial values if only one side is known. */
 export function formatBp(card: TraumaCard): string {
   const { bpSystolic, bpDiastolic } = card.vitals;
   if (bpSystolic == null && bpDiastolic == null) return "—";
@@ -114,6 +113,34 @@ export function formatBp(card: TraumaCard): string {
   }
   if (bpSystolic != null) return `${bpSystolic}/—`;
   return `—/${bpDiastolic}`;
+}
+
+/** Remaining ms until ETA deadline from etaCapturedAt + etaMinutes. */
+export function etaRemainingMs(card: TraumaCard, now = Date.now()): number | null {
+  if (card.etaMinutes == null) return null;
+  if (!card.etaCapturedAt) return card.etaMinutes * 60_000;
+  const deadline =
+    new Date(card.etaCapturedAt).getTime() + card.etaMinutes * 60_000;
+  return deadline - now;
+}
+
+/** Live countdown as MM:SS (or static MM:00 if capture time missing). */
+export function formatEtaCountdown(card: TraumaCard, now = Date.now()): string {
+  if (card.etaMinutes == null) return "—";
+  if (!card.etaCapturedAt) {
+    return `${String(card.etaMinutes).padStart(2, "0")}:00`;
+  }
+  const remaining = etaRemainingMs(card, now) ?? 0;
+  if (remaining <= 0) return "00:00";
+  const totalSec = Math.ceil(remaining / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+export function etaIsOverdue(card: TraumaCard, now = Date.now()): boolean {
+  const remaining = etaRemainingMs(card, now);
+  return remaining != null && !!card.etaCapturedAt && remaining <= 0;
 }
 
 export function patientLine(card: TraumaCard): string {
