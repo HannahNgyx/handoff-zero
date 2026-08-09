@@ -668,6 +668,48 @@ export async function acceptHandoff(
   return { tasks, communication };
 }
 
+/** Hospital declines transfer — revoke ServiceRequest and ping EMS. */
+export async function declineHandoff(
+  medplum: MedplumClient,
+  handoff: ActiveHandoff,
+  reason = "Unable to accept at this time — divert or hold on scene guidance.",
+): Promise<Communication> {
+  if (!handoff.serviceRequestId) {
+    throw new Error("Missing ServiceRequest id");
+  }
+
+  const sr = await medplum.readResource("ServiceRequest", handoff.serviceRequestId);
+  await medplum.updateResource({
+    ...sr,
+    status: "revoked",
+    note: [
+      ...(sr.note ?? []),
+      { text: `Declined: ${reason}`, time: new Date().toISOString() },
+    ],
+  });
+
+  return medplum.createResource<Communication>({
+    resourceType: "Communication",
+    meta: {
+      tag: metaTag({ code: TAG_ACCEPTANCE, display: "Decline acknowledgment" }),
+    },
+    status: "completed",
+    category: [{ text: "Transfer declined" }],
+    subject: sr.subject as Communication["subject"],
+    encounter: sr.encounter,
+    payload: [
+      {
+        contentString: JSON.stringify({
+          type: "decline",
+          message: `Central Hospital cannot accept this patient. ${reason}`,
+          serviceRequestId: handoff.serviceRequestId,
+          encounterId: handoff.encounterId,
+        }),
+      },
+    ],
+  });
+}
+
 export function buildHandoffTransaction(
   card: TraumaCard,
   serviceRequestStatus: "draft" | "active" = "draft",

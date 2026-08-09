@@ -257,7 +257,8 @@ function EmsContent() {
         message?: string;
         serviceRequestId?: string;
       };
-      if (parsed.type !== "acceptance" || !parsed.message) return;
+      if (parsed.type !== "acceptance" && parsed.type !== "decline") return;
+      if (!parsed.message) return;
       const match = casesRef.current.find(
         (c) =>
           !parsed.serviceRequestId ||
@@ -265,13 +266,23 @@ function EmsContent() {
       );
       if (match && activeCaseId && match.id !== activeCaseId) {
         setStatus(
-          `Hospital accepted case ${caseShortId(match)} — switch to that case.`,
+          parsed.type === "decline"
+            ? `Hospital declined case ${caseShortId(match)} — switch to that case.`
+            : `Hospital accepted case ${caseShortId(match)} — switch to that case.`,
         );
         return;
       }
       setInjectMessage(parsed.message);
       setBanner(parsed.message);
-      setStatus("Hospital accepted — see acknowledgment below.");
+      setStatus(
+        parsed.type === "decline"
+          ? "Hospital cannot accept — see message below."
+          : "Hospital accepted — see acknowledgment below.",
+      );
+      if (parsed.type === "decline" && match) {
+        setCases((list) => list.filter((c) => c.id !== match.id));
+        if (activeCaseId === match.id) setActiveCaseId(null);
+      }
     } catch {
       /* ignore */
     }

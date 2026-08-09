@@ -6,6 +6,7 @@ import {
   acceptHandoff,
   BRIDGE_COMM_CRITERIA,
   CHANNEL_COMM_CRITERIA,
+  declineHandoff,
   HANDOFF_COMM_CRITERIA,
   HANDOFF_SR_CRITERIA,
   INFO_REQUEST_COMM_CRITERIA,
@@ -155,6 +156,7 @@ function CaseDetail({
   onSubmitInfo,
   onCancelPicker,
   onBridge,
+  onDecline,
   onSendChannel,
 }: {
   handoff: ActiveHandoff;
@@ -168,6 +170,7 @@ function CaseDetail({
   onSubmitInfo: (topics: InfoTopicId[], customNote: string) => void;
   onCancelPicker: () => void;
   onBridge: () => void;
+  onDecline: () => void;
   onSendChannel: () => void;
 }) {
   const { card } = handoff;
@@ -273,8 +276,9 @@ function CaseDetail({
         </button>
         <button
           type="button"
-          disabled
-          className="cursor-not-allowed rounded-md border border-zinc-700 px-3 py-2 text-sm text-zinc-500"
+          disabled={busy}
+          onClick={onDecline}
+          className="rounded-md border border-rose-900/60 px-3 py-2 text-sm text-rose-200 hover:bg-rose-950/40 disabled:opacity-50"
         >
           Cannot Accept
         </button>
@@ -531,6 +535,25 @@ function HospitalContent() {
     }
   }
 
+  async function onDecline(handoff: ActiveHandoff) {
+    setBusy(true);
+    setError(null);
+    try {
+      await declineHandoff(medplum, handoff);
+      setHandoffs((h) => h.filter((x) => x.id !== handoff.id));
+      if (selectedId === handoff.id) {
+        setSelectedId(null);
+        setAccepted((a) => (a?.id === handoff.id ? null : a));
+      }
+      pushEvent(`[${caseShortId(handoff)}] Transfer declined (Cannot Accept)`);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Decline failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onSubmitInfo(
     handoff: ActiveHandoff,
     topics: InfoTopicId[],
@@ -735,6 +758,7 @@ function HospitalContent() {
             }
             onCancelPicker={() => setShowPicker(false)}
             onBridge={() => void onBridge(selected)}
+            onDecline={() => void onDecline(selected)}
             onSendChannel={() => void onSendChannel(selected)}
           />
         )}
