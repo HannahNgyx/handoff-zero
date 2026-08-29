@@ -273,19 +273,59 @@ function VoiceControls({
     <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.15em] text-teal-400/90">
-            Deepgram voice
-          </p>
+          <div className="flex items-center gap-2">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.15em] text-teal-400/90">
+              Deepgram voice
+            </p>
+            {isConnected && (
+              <span
+                className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                  isSpeaking
+                    ? "bg-teal-900/60 text-teal-300 ring-1 ring-teal-500/50"
+                    : mode === "listening"
+                      ? "bg-emerald-900/60 text-emerald-300 ring-1 ring-emerald-500/50"
+                      : "bg-zinc-800 text-zinc-400"
+                }`}
+              >
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    isSpeaking
+                      ? "bg-teal-400 animate-ping"
+                      : mode === "listening"
+                        ? "bg-emerald-400 animate-pulse"
+                        : "bg-zinc-500"
+                  }`}
+                />
+                {isSpeaking ? "Speaking" : mode === "listening" ? "Listening" : mode}
+              </span>
+            )}
+          </div>
           <p className="mt-1 font-mono text-xs text-zinc-400">
             {state}
-            {isConnected ? ` · ${mode}` : ""}
             {isConnected ? ` · mic ${micMuted ? "muted" : "open"}` : ""}
             {isConnected ? ` · tts ${ttsEnabled ? "on" : "off"}` : ""}
           </p>
           {isConnected && (
-            <p className="mt-0.5 font-mono text-[10px] text-zinc-600">
-              in {levels.in}% · out {levels.out}%
-            </p>
+            <div className="mt-2 flex items-center gap-3 font-mono text-[10px] text-zinc-500">
+              <div className="flex items-center gap-1.5">
+                <span>Mic</span>
+                <div className="h-1.5 w-16 overflow-hidden rounded-full bg-zinc-800">
+                  <div
+                    className="h-full bg-emerald-500 transition-all duration-75"
+                    style={{ width: `${Math.min(100, levels.in * 1.5)}%` }}
+                  />
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span>Voice</span>
+                <div className="h-1.5 w-16 overflow-hidden rounded-full bg-zinc-800">
+                  <div
+                    className="h-full bg-teal-400 transition-all duration-75"
+                    style={{ width: `${Math.min(100, levels.out * 1.5)}%` }}
+                  />
+                </div>
+              </div>
+            </div>
           )}
         </div>
         <button

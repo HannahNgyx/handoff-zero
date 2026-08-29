@@ -20,16 +20,20 @@ import {
 } from "@/lib/fhir/handoff";
 import {
   applyHandoffText,
+  calculateShockIndex,
   caseShortId,
   caseTitle,
+  DEMO_PRESETS,
   DEMO_TRAUMA_CARD,
   EMPTY_TRAUMA_CARD,
   formatBp,
   flagBp,
+  flagGcs,
   flagHr,
   getMissingFields,
   patientLine,
   type ActiveHandoff,
+  type DemoPreset,
   type TraumaCard,
 } from "@/lib/trauma";
 import type { Bundle, Communication } from "@medplum/fhirtypes";
@@ -125,8 +129,37 @@ function TraumaCardView({
           </div>
           <div className="flex justify-between gap-4">
             <dt className="text-zinc-500">GCS</dt>
-            <dd>{card.vitals.gcs ?? "—"}</dd>
+            <dd>
+              {card.vitals.gcs ?? "—"}
+              <Flag value={flagGcs(card.vitals.gcs)} />
+            </dd>
           </div>
+          {(() => {
+            const si = calculateShockIndex(
+              card.vitals.heartRate,
+              card.vitals.bpSystolic,
+            );
+            if (!si) return null;
+            return (
+              <div className="flex justify-between gap-4">
+                <dt className="text-zinc-500">Shock Index (HR/SBP)</dt>
+                <dd className="font-mono">
+                  {si.value}
+                  <span
+                    className={`ml-2 text-[10px] font-bold tracking-wider ${
+                      si.flag === "CRITICAL"
+                        ? "text-rose-400"
+                        : si.flag === "ELEVATED"
+                          ? "text-amber-400"
+                          : "text-emerald-400"
+                    }`}
+                  >
+                    {si.flag}
+                  </span>
+                </dd>
+              </div>
+            );
+          })()}
           <div className="flex justify-between gap-4">
             <dt className="text-zinc-500">Injury</dt>
             <dd className="text-right">{card.injury ?? "—"}</dd>
@@ -686,6 +719,28 @@ function EmsContent() {
               Request live connect
             </button>
           </div>
+          {activeCase && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {[
+                "ETA 4 mins",
+                "IV established",
+                "Vitals stable",
+                "Patient deteriorating",
+              ].map((quick) => (
+                <button
+                  key={quick}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    setChannelDraft(quick);
+                  }}
+                  className="rounded border border-zinc-800 bg-zinc-950/60 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
+                >
+                  {quick}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {banner && (
@@ -697,38 +752,46 @@ function EmsContent() {
           </div>
         )}
 
-        <div className="mt-6 flex flex-wrap gap-3">
-          <button
-            type="button"
-            onClick={() => {
-              const demo = {
-                ...DEMO_TRAUMA_CARD,
-                etaCapturedAt: new Date().toISOString(),
-              };
-              setCard(demo);
-              setReportText(
-                "Incoming 27-year-old female, motorcycle collision. Blood pressure 92 over 60, heart rate 128, GCS 13. Possible left femur fracture. Allergic to penicillin. No known anticoagulants. ETA six minutes.",
-              );
-              setStatus(null);
-              setInjectMessage(null);
-              setBanner(null);
-            }}
-            className="rounded-md bg-zinc-800 px-4 py-2.5 text-sm font-medium text-zinc-100 hover:bg-zinc-700"
-          >
-            Load demo handoff
-          </button>
-          <button
-            type="button"
-            disabled={!hasData || busy || activeCase?.handoffStatus === "confirmed"}
-            onClick={() => void onConfirm()}
-            className="rounded-md border border-teal-600/80 bg-teal-700/30 px-4 py-2.5 text-sm font-medium text-teal-100 enabled:hover:bg-teal-700/50 disabled:cursor-not-allowed disabled:border-zinc-700 disabled:bg-transparent disabled:text-zinc-500"
-          >
-            {busy
-              ? "Confirming…"
-              : activeCase?.handoffStatus === "confirmed"
-                ? "Confirmed"
-                : "Confirm handoff"}
-          </button>
+        <div className="mt-6 space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
+              Demo Scenarios:
+            </span>
+            {DEMO_PRESETS.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => {
+                  setCard({
+                    ...p.card,
+                    etaCapturedAt: new Date().toISOString(),
+                  });
+                  setReportText(p.reportText);
+                  setStatus(`Loaded ${p.name}`);
+                  setInjectMessage(null);
+                  setBanner(null);
+                }}
+                className="rounded-md bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-200 transition hover:bg-zinc-700"
+              >
+                {p.name.split(" · ")[0]}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex flex-wrap gap-3">
+            <button
+              type="button"
+              disabled={!hasData || busy || activeCase?.handoffStatus === "confirmed"}
+              onClick={() => void onConfirm()}
+              className="rounded-md border border-teal-600/80 bg-teal-700/30 px-5 py-2.5 text-sm font-medium text-teal-100 enabled:hover:bg-teal-700/50 disabled:cursor-not-allowed disabled:border-zinc-700 disabled:bg-transparent disabled:text-zinc-500"
+            >
+              {busy
+                ? "Confirming…"
+                : activeCase?.handoffStatus === "confirmed"
+                  ? "Confirmed"
+                  : "Confirm handoff"}
+            </button>
+          </div>
         </div>
 
         {status && (

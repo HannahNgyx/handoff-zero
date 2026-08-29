@@ -105,6 +105,135 @@ export function flagHr(hr: number | null): VitalFlag {
   return null;
 }
 
+export function flagGcs(gcs: number | null): VitalFlag {
+  if (gcs == null) return null;
+  if (gcs <= 8) return "CRITICAL";
+  if (gcs <= 12) return "HIGH";
+  return null;
+}
+
+export function calculateShockIndex(
+  hr: number | null,
+  sbp: number | null,
+): { value: number; flag: "NORMAL" | "ELEVATED" | "CRITICAL" } | null {
+  if (hr == null || sbp == null || sbp === 0) return null;
+  const val = Number((hr / sbp).toFixed(2));
+  const flag = val >= 1.0 ? "CRITICAL" : val >= 0.9 ? "ELEVATED" : "NORMAL";
+  return { value: val, flag };
+}
+
+export interface TraumaTriageAssessment {
+  level: "LEVEL 1 TRAUMA" | "LEVEL 2 TRAUMA" | "ROUTINE";
+  reasons: string[];
+}
+
+export function getTraumaTriageAssessment(card: TraumaCard): TraumaTriageAssessment {
+  const reasons: string[] = [];
+  const si = calculateShockIndex(card.vitals.heartRate, card.vitals.bpSystolic);
+
+  // Level 1 Physiological & Anatomical Criteria (CDC / ACS Guidelines)
+  if (card.vitals.bpSystolic != null && card.vitals.bpSystolic < 90) {
+    reasons.push("Hypotension (SBP < 90)");
+  }
+  if (card.vitals.gcs != null && card.vitals.gcs <= 13) {
+    reasons.push(`Altered Mental Status (GCS ${card.vitals.gcs} ≤ 13)`);
+  }
+  if (si && si.flag === "CRITICAL") {
+    reasons.push(`Critical Shock Index (${si.value} ≥ 1.0)`);
+  }
+  if (card.injury && /femur|pelvis|pelvic|amputation|penetrating|crush|flail/i.test(card.injury)) {
+    reasons.push(`High-acuity anatomical injury: ${card.injury}`);
+  }
+
+  if (reasons.length > 0) {
+    return { level: "LEVEL 1 TRAUMA", reasons };
+  }
+
+  // Level 2 High-Risk Mechanism / Special Criteria
+  if (card.mechanism && /motorcycle|pedestrian|ejection|rollover|fall.*(10|15|20|height)/i.test(card.mechanism)) {
+    reasons.push(`High-risk mechanism: ${card.mechanism}`);
+  }
+  if (card.anticoagulants && !/none/i.test(card.anticoagulants)) {
+    reasons.push(`Anticoagulation alert: ${card.anticoagulants}`);
+  }
+  if (card.age != null && card.age >= 65) {
+    reasons.push(`Geriatric trauma risk (Age ${card.age} ≥ 65)`);
+  }
+
+  if (reasons.length > 0) {
+    return { level: "LEVEL 2 TRAUMA", reasons };
+  }
+
+  return { level: "ROUTINE", reasons: ["Standard trauma assessment"] };
+}
+
+export interface DemoPreset {
+  id: string;
+  name: string;
+  card: TraumaCard;
+  reportText: string;
+}
+
+export const DEMO_PRESETS: DemoPreset[] = [
+  {
+    id: "motorcycle",
+    name: "Motorcycle Crash (27F · Femur Fx · GCS 13)",
+    card: DEMO_TRAUMA_CARD,
+    reportText:
+      "Incoming 27-year-old female, motorcycle collision. Blood pressure 92 over 60, heart rate 128, GCS 13. Possible left femur fracture. Allergic to penicillin. No known anticoagulants. ETA six minutes.",
+  },
+  {
+    id: "pedestrian",
+    name: "Pedestrian vs Auto (45M · Unresponsive · Shock)",
+    card: {
+      age: 45,
+      sex: "male",
+      mechanism: "Pedestrian struck by vehicle at 35mph",
+      vitals: {
+        bpSystolic: 84,
+        bpDiastolic: 48,
+        heartRate: 138,
+        gcs: 8,
+      },
+      injury: "Suspected unstable pelvic fracture and thoracic trauma",
+      allergy: "No known drug allergies",
+      anticoagulants: "Warfarin",
+      bloodType: "O-",
+      lastOralIntake: "Unknown",
+      emergencyContact: "Wife at 555-0192",
+      etaMinutes: 4,
+      etaCapturedAt: null,
+    },
+    reportText:
+      "Incoming 45-year-old male, pedestrian struck by auto. Blood pressure 84 over 48, heart rate 138, GCS 8. Unstable pelvic fracture. Patient on Warfarin. Blood type O negative. ETA 4 minutes.",
+  },
+  {
+    id: "elderly_fall",
+    name: "Fall from Roof (68M · Head Strike · Eliquis)",
+    card: {
+      age: 68,
+      sex: "male",
+      mechanism: "Fall from 15-foot roof",
+      vitals: {
+        bpSystolic: 168,
+        bpDiastolic: 92,
+        heartRate: 82,
+        gcs: 14,
+      },
+      injury: "Right parietal scalp laceration with loss of consciousness",
+      allergy: "Sulfa drugs",
+      anticoagulants: "Eliquis 5mg BID",
+      bloodType: "A+",
+      lastOralIntake: "Breakfast at 7:30 AM",
+      emergencyContact: "Son: 555-0144",
+      etaMinutes: 8,
+      etaCapturedAt: null,
+    },
+    reportText:
+      "Incoming 68-year-old male, fall from 15-foot roof with brief LOC. Blood pressure 168 over 92, heart rate 82, GCS 14. Scalp laceration. Allergic to sulfa. On Eliquis. Blood type A positive. ETA eight minutes.",
+  },
+];
+
 export function formatBp(card: TraumaCard): string {
   const { bpSystolic, bpDiastolic } = card.vitals;
   if (bpSystolic == null && bpDiastolic == null) return "—";

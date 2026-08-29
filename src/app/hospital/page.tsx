@@ -23,12 +23,15 @@ import {
   type InfoTopicId,
 } from "@/lib/fhir/handoff";
 import {
+  calculateShockIndex,
   caseShortId,
   caseTitle,
   formatBp,
   flagBp,
+  flagGcs,
   flagHr,
   getSuggestedAsks,
+  getTraumaTriageAssessment,
   patientLine,
   sortHandoffs,
   type ActiveHandoff,
@@ -175,6 +178,7 @@ function CaseDetail({
 }) {
   const { card } = handoff;
   const suggestions = getSuggestedAsks(card);
+  const triage = getTraumaTriageAssessment(card);
 
   return (
     <section
@@ -204,6 +208,26 @@ function CaseDetail({
         <EtaCountdown card={card} />
       </div>
 
+      {triage.level !== "ROUTINE" && (
+        <div
+          className={`mt-4 rounded-md border p-3 text-xs ${
+            triage.level === "LEVEL 1 TRAUMA"
+              ? "border-rose-700/60 bg-rose-950/30 text-rose-200"
+              : "border-amber-700/60 bg-amber-950/30 text-amber-200"
+          }`}
+        >
+          <div className="flex items-center gap-2 font-semibold tracking-wide">
+            <span className="inline-block h-2 w-2 rounded-full bg-current animate-pulse" />
+            <span>{triage.level} CRITERIA MET</span>
+          </div>
+          <ul className="mt-1.5 space-y-0.5 text-[11px] opacity-90">
+            {triage.reasons.map((r, i) => (
+              <li key={i}>• {r}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <dl className="mt-4 space-y-2.5 font-mono text-sm">
         <div className="flex justify-between gap-4">
           <dt className="text-zinc-500">
@@ -223,6 +247,39 @@ function CaseDetail({
             <Flag value={flagHr(card.vitals.heartRate)} />
           </dd>
         </div>
+        <div className="flex justify-between gap-4">
+          <dt className="text-zinc-500">GCS</dt>
+          <dd>
+            {card.vitals.gcs ?? "—"}
+            <Flag value={flagGcs(card.vitals.gcs)} />
+          </dd>
+        </div>
+        {(() => {
+          const si = calculateShockIndex(
+            card.vitals.heartRate,
+            card.vitals.bpSystolic,
+          );
+          if (!si) return null;
+          return (
+            <div className="flex justify-between gap-4">
+              <dt className="text-zinc-500">Shock Index (HR/SBP)</dt>
+              <dd className="font-mono">
+                {si.value}
+                <span
+                  className={`ml-2 text-[10px] font-bold tracking-wider ${
+                    si.flag === "CRITICAL"
+                      ? "text-rose-400"
+                      : si.flag === "ELEVATED"
+                        ? "text-amber-400"
+                        : "text-emerald-400"
+                  }`}
+                >
+                  {si.flag}
+                </span>
+              </dd>
+            </div>
+          );
+        })()}
         <div className="flex justify-between gap-4">
           <dt className="text-zinc-500">Injury</dt>
           <dd className="text-right">{card.injury ?? "—"}</dd>
@@ -351,6 +408,24 @@ function CaseDetail({
             Send
           </button>
         </div>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {[
+            "Trauma Bay 2 Ready",
+            "Trauma Team Activated",
+            "Airway Team Standby",
+            "Direct to CT on arrival",
+          ].map((quick) => (
+            <button
+              key={quick}
+              type="button"
+              disabled={busy}
+              onClick={() => onChannelDraft(quick)}
+              className="rounded border border-zinc-800 bg-zinc-950/60 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
+            >
+              {quick}
+            </button>
+          ))}
+        </div>
       </div>
     </section>
   );
@@ -379,8 +454,14 @@ function HospitalContent() {
   const [seenConfirmed, setSeenConfirmed] = useState<Set<string>>(new Set());
   const [dirtyIds, setDirtyIds] = useState<Set<string>>(new Set());
   const [showPicker, setShowPicker] = useState(false);
+  const [queueFilter, setQueueFilter] = useState<"all" | "incoming" | "confirmed">("all");
 
   const sorted = useMemo(() => sortHandoffs(handoffs), [handoffs]);
+  const filteredQueue = useMemo(() => {
+    if (queueFilter === "all") return sorted;
+    return sorted.filter((h) => h.handoffStatus === queueFilter);
+  }, [sorted, queueFilter]);
+
   const selected =
     sorted.find((h) => h.id === selectedId) ??
     (accepted?.id === selectedId ? accepted : null) ??
@@ -611,19 +692,37 @@ function HospitalContent() {
   return (
     <div className="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
       <aside>
-        <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-          Case queue
-        </p>
-        <p className="mt-1 text-[11px] text-zinc-600">
-          {sorted.length} open · select to work a case
-        </p>
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
+            Case queue
+          </p>
+          <span className="font-mono text-[10px] text-zinc-500">
+            {sorted.length} total
+          </span>
+        </div>
+        <div className="mt-2 flex gap-1 rounded bg-zinc-950 p-0.5 text-[10px]">
+          {(["all", "incoming", "confirmed"] as const).map((filter) => (
+            <button
+              key={filter}
+              type="button"
+              onClick={() => setQueueFilter(filter)}
+              className={`flex-1 rounded py-1 font-medium capitalize transition ${
+                queueFilter === filter
+                  ? "bg-zinc-800 text-teal-300 shadow-sm"
+                  : "text-zinc-500 hover:text-zinc-300"
+              }`}
+            >
+              {filter}
+            </button>
+          ))}
+        </div>
         <ul className="mt-3 space-y-1">
-          {sorted.length === 0 && !accepted ? (
+          {filteredQueue.length === 0 && !accepted ? (
             <li className="rounded-md border border-dashed border-zinc-800 px-3 py-6 text-center text-xs text-zinc-600">
-              Waiting for Incoming…
+              No cases match filter
             </li>
           ) : (
-            sorted.map((h) => {
+            filteredQueue.map((h) => {
               const active = selected?.id === h.id;
               const dirty = dirtyIds.has(h.id) && !active;
               const bp = flagBp(h.card.vitals.bpSystolic);
