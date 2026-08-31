@@ -30,6 +30,7 @@ type TraumaArgs = {
   bloodType?: string;
   lastOralIntake?: string;
   emergencyContact?: string;
+  interventions?: string[];
   etaMinutes?: number;
   field?: string;
   value?: string;
@@ -86,6 +87,7 @@ export function applyTraumaArgs(card: TraumaCard, raw: TraumaArgs): TraumaCard {
       : card.bloodType,
     lastOralIntake: raw.lastOralIntake ?? card.lastOralIntake,
     emergencyContact: raw.emergencyContact ?? card.emergencyContact,
+    interventions: raw.interventions ?? card.interventions,
     etaMinutes: raw.etaMinutes ?? card.etaMinutes,
     etaCapturedAt: card.etaCapturedAt ?? new Date().toISOString(),
   };
@@ -165,6 +167,11 @@ function buildAgentConfig(): AgentSessionConfig {
                 bloodType: { type: "string" },
                 lastOralIntake: { type: "string" },
                 emergencyContact: { type: "string" },
+                interventions: {
+                  type: "array",
+                  items: { type: "string" },
+                  description: "Prehospital critical interventions performed (e.g. Tourniquet, Pelvic Binder, TXA, Large Bore IV, Intubated).",
+                },
                 etaMinutes: { type: "number" },
               },
             },

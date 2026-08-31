@@ -23,6 +23,7 @@ import {
   calculateShockIndex,
   caseShortId,
   caseTitle,
+  COMMON_INTERVENTIONS,
   DEMO_PRESETS,
   DEMO_TRAUMA_CARD,
   EMPTY_TRAUMA_CARD,
@@ -188,6 +189,21 @@ function TraumaCardView({
             <dt className="text-zinc-500">Emergency contact</dt>
             <dd className="text-right">{card.emergencyContact ?? "—"}</dd>
           </div>
+          {card.interventions && card.interventions.length > 0 && (
+            <div className="flex items-start justify-between gap-4 pt-1">
+              <dt className="text-zinc-500">Interventions</dt>
+              <dd className="flex flex-wrap justify-end gap-1.5 text-right">
+                {card.interventions.map((intv) => (
+                  <span
+                    key={intv}
+                    className="inline-block rounded bg-emerald-950/80 px-2 py-0.5 text-[11px] font-semibold text-emerald-300 ring-1 ring-emerald-600/50"
+                  >
+                    {intv}
+                  </span>
+                ))}
+              </dd>
+            </div>
+          )}
         </dl>
       )}
 
@@ -637,6 +653,68 @@ function EmsContent() {
             injectMessage={injectMessage}
             onVoiceStarted={onVoiceStarted}
           />
+        </div>
+
+        <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900/30 p-4">
+          <div className="flex items-center justify-between gap-2 border-b border-zinc-800/80 pb-3">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.15em] text-zinc-400">
+              Quick Field Actions
+            </p>
+            <div className="flex items-center gap-1">
+              <span className="text-[10px] text-zinc-500">Adjust ETA:</span>
+              {[-2, 2, 5].map((delta) => (
+                <button
+                  key={delta}
+                  type="button"
+                  onClick={() => {
+                    const current = card.etaMinutes ?? 10;
+                    const nextEta = Math.max(1, current + delta);
+                    setCard({
+                      ...card,
+                      etaMinutes: nextEta,
+                      etaCapturedAt: new Date().toISOString(),
+                    });
+                  }}
+                  className="rounded border border-zinc-700 bg-zinc-950 px-2 py-0.5 font-mono text-[11px] text-zinc-300 hover:border-zinc-500"
+                >
+                  {delta > 0 ? `+${delta}` : delta}m
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-3">
+            <p className="text-xs text-zinc-500">Critical prehospital interventions:</p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {COMMON_INTERVENTIONS.map((intv) => {
+                const active = card.interventions?.includes(intv);
+                return (
+                  <button
+                    key={intv}
+                    type="button"
+                    onClick={() => {
+                      const current = card.interventions ?? [];
+                      const next = active
+                        ? current.filter((i) => i !== intv)
+                        : [...current, intv];
+                      setCard({
+                        ...card,
+                        interventions: next,
+                      });
+                    }}
+                    className={`rounded px-2.5 py-1 text-xs font-medium transition ${
+                      active
+                        ? "bg-emerald-900/80 text-emerald-200 ring-1 ring-emerald-500"
+                        : "border border-zinc-700 bg-zinc-950 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
+                    }`}
+                  >
+                    {active ? "✓ " : "+ "}
+                    {intv}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
 
         <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900/30 p-4">

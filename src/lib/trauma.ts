@@ -20,10 +20,21 @@ export interface TraumaCard {
   bloodType: string | null;
   lastOralIntake: string | null;
   emergencyContact: string | null;
+  interventions?: string[];
   /** ETA in whole minutes from now when handoff was captured */
   etaMinutes: number | null;
   etaCapturedAt: string | null;
 }
+
+export const COMMON_INTERVENTIONS = [
+  "Tourniquet",
+  "Pelvic Binder",
+  "TXA",
+  "Needle Decompression",
+  "Intubated / SGA",
+  "Blood Products",
+  "Large Bore IV",
+] as const;
 
 export const EMPTY_TRAUMA_CARD: TraumaCard = {
   age: null,
@@ -41,6 +52,7 @@ export const EMPTY_TRAUMA_CARD: TraumaCard = {
   bloodType: null,
   lastOralIntake: null,
   emergencyContact: null,
+  interventions: [],
   etaMinutes: null,
   etaCapturedAt: null,
 };
@@ -62,6 +74,7 @@ export const DEMO_TRAUMA_CARD: TraumaCard = {
   bloodType: null,
   lastOralIntake: null,
   emergencyContact: null,
+  interventions: ["Large Bore IV"],
   etaMinutes: 6,
   etaCapturedAt: null,
 };
@@ -144,6 +157,10 @@ export function getTraumaTriageAssessment(card: TraumaCard): TraumaTriageAssessm
   if (card.injury && /femur|pelvis|pelvic|amputation|penetrating|crush|flail/i.test(card.injury)) {
     reasons.push(`High-acuity anatomical injury: ${card.injury}`);
   }
+  if (card.interventions?.some((i) => /tourniquet|binder|decompression|intubated|blood/i.test(i))) {
+    const criticalInt = card.interventions.filter((i) => /tourniquet|binder|decompression|intubated|blood/i.test(i));
+    reasons.push(`Critical field intervention: ${criticalInt.join(", ")}`);
+  }
 
   if (reasons.length > 0) {
     return { level: "LEVEL 1 TRAUMA", reasons };
@@ -180,7 +197,7 @@ export const DEMO_PRESETS: DemoPreset[] = [
     name: "Motorcycle Crash (27F · Femur Fx · GCS 13)",
     card: DEMO_TRAUMA_CARD,
     reportText:
-      "Incoming 27-year-old female, motorcycle collision. Blood pressure 92 over 60, heart rate 128, GCS 13. Possible left femur fracture. Allergic to penicillin. No known anticoagulants. ETA six minutes.",
+      "Incoming 27-year-old female, motorcycle collision. Blood pressure 92 over 60, heart rate 128, GCS 13. Possible left femur fracture. Allergic to penicillin. No known anticoagulants. Large bore IV in place. ETA six minutes.",
   },
   {
     id: "pedestrian",
@@ -201,11 +218,12 @@ export const DEMO_PRESETS: DemoPreset[] = [
       bloodType: "O-",
       lastOralIntake: "Unknown",
       emergencyContact: "Wife at 555-0192",
+      interventions: ["Pelvic Binder", "TXA", "Large Bore IV"],
       etaMinutes: 4,
       etaCapturedAt: null,
     },
     reportText:
-      "Incoming 45-year-old male, pedestrian struck by auto. Blood pressure 84 over 48, heart rate 138, GCS 8. Unstable pelvic fracture. Patient on Warfarin. Blood type O negative. ETA 4 minutes.",
+      "Incoming 45-year-old male, pedestrian struck by auto. Blood pressure 84 over 48, heart rate 138, GCS 8. Unstable pelvic fracture. Pelvic binder and TXA given. Patient on Warfarin. Blood type O negative. ETA 4 minutes.",
   },
   {
     id: "elderly_fall",
@@ -226,6 +244,7 @@ export const DEMO_PRESETS: DemoPreset[] = [
       bloodType: "A+",
       lastOralIntake: "Breakfast at 7:30 AM",
       emergencyContact: "Son: 555-0144",
+      interventions: ["Large Bore IV"],
       etaMinutes: 8,
       etaCapturedAt: null,
     },
@@ -408,6 +427,32 @@ export function applyHandoffText(card: TraumaCard, text: string): TraumaCard {
     /(?:last\s*(?:ate|drank|oral\s*intake)|ate|drank)\s*(?:around\s*|at\s*)?(.+?)(?:\.|$)/,
   );
   if (oral?.[1]) next.lastOralIntake = oral[1].trim().slice(0, 80);
+
+  const parsedInterventions: string[] = [...(next.interventions ?? [])];
+  if (/tourniquet|\btq\b/.test(lower) && !parsedInterventions.includes("Tourniquet")) {
+    parsedInterventions.push("Tourniquet");
+  }
+  if (/pelvic\s*binder|binder/.test(lower) && !parsedInterventions.includes("Pelvic Binder")) {
+    parsedInterventions.push("Pelvic Binder");
+  }
+  if (/txa|tranexamic/.test(lower) && !parsedInterventions.includes("TXA")) {
+    parsedInterventions.push("TXA");
+  }
+  if (/needle\s*decompression|thoracostomy/.test(lower) && !parsedInterventions.includes("Needle Decompression")) {
+    parsedInterventions.push("Needle Decompression");
+  }
+  if (/intubat|sga|supraglottic|et\s*tube/.test(lower) && !parsedInterventions.includes("Intubated / SGA")) {
+    parsedInterventions.push("Intubated / SGA");
+  }
+  if (/blood\s*product|whole\s*blood|blood\s*given/.test(lower) && !parsedInterventions.includes("Blood Products")) {
+    parsedInterventions.push("Blood Products");
+  }
+  if (/large\s*bore|18g|16g|14g|iv|intraosseous|\bio\b/.test(lower) && !parsedInterventions.includes("Large Bore IV")) {
+    parsedInterventions.push("Large Bore IV");
+  }
+  if (parsedInterventions.length > 0) {
+    next.interventions = parsedInterventions;
+  }
 
   return next;
 }

@@ -147,12 +147,22 @@ function InfoRequestPicker({
   );
 }
 
+const TRAUMA_BAY_CHECKLIST = [
+  "Trauma Surgeon / Team Alerted",
+  "Trauma Bay 2 Monitored & Ready",
+  "RSI Airway Kit at Bedside",
+  "Blood Bank MTP Cooler on Standby",
+  "CT Scanner Cleared for Direct Arrival",
+] as const;
+
 function CaseDetail({
   handoff,
   busy,
   showPicker,
   channel,
   channelDraft,
+  readiness,
+  onToggleReadiness,
   onChannelDraft,
   onAccept,
   onOpenPicker,
@@ -167,6 +177,8 @@ function CaseDetail({
   showPicker: boolean;
   channel: ChannelEntry[];
   channelDraft: string;
+  readiness: Set<string>;
+  onToggleReadiness: (item: string) => void;
   onChannelDraft: (v: string) => void;
   onAccept: () => void;
   onOpenPicker: () => void;
@@ -304,7 +316,61 @@ function CaseDetail({
           <dt className="text-zinc-500">Emergency contact</dt>
           <dd className="text-right">{card.emergencyContact ?? "—"}</dd>
         </div>
+        {card.interventions && card.interventions.length > 0 && (
+          <div className="flex items-start justify-between gap-4 pt-1">
+            <dt className="text-zinc-500">Interventions</dt>
+            <dd className="flex flex-wrap justify-end gap-1.5 text-right">
+              {card.interventions.map((intv) => (
+                <span
+                  key={intv}
+                  className="inline-block rounded bg-emerald-950/80 px-2 py-0.5 text-[11px] font-semibold text-emerald-300 ring-1 ring-emerald-600/50"
+                >
+                  {intv}
+                </span>
+              ))}
+            </dd>
+          </div>
+        )}
       </dl>
+
+      <div className="mt-6 border-t border-zinc-800 pt-4">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+            Trauma Bay Readiness Checklist
+          </p>
+          <span className="font-mono text-[10px] text-zinc-500">
+            {readiness.size}/{TRAUMA_BAY_CHECKLIST.length} ready
+          </span>
+        </div>
+        <div className="mt-2.5 grid gap-1.5 sm:grid-cols-2">
+          {TRAUMA_BAY_CHECKLIST.map((item) => {
+            const checked = readiness.has(item);
+            return (
+              <button
+                key={item}
+                type="button"
+                onClick={() => onToggleReadiness(item)}
+                className={`flex items-center gap-2 rounded border p-2 text-left text-xs transition ${
+                  checked
+                    ? "border-teal-700/60 bg-teal-950/40 text-teal-200"
+                    : "border-zinc-800 bg-zinc-950/60 text-zinc-400 hover:border-zinc-700 hover:text-zinc-300"
+                }`}
+              >
+                <span
+                  className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[10px] font-bold ${
+                    checked
+                      ? "border-teal-500 bg-teal-600 text-white"
+                      : "border-zinc-700 bg-zinc-900 text-transparent"
+                  }`}
+                >
+                  ✓
+                </span>
+                <span className="truncate">{item}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
       <div className="mt-6 flex flex-wrap gap-2">
         <button
@@ -455,6 +521,7 @@ function HospitalContent() {
   const [dirtyIds, setDirtyIds] = useState<Set<string>>(new Set());
   const [showPicker, setShowPicker] = useState(false);
   const [queueFilter, setQueueFilter] = useState<"all" | "incoming" | "confirmed">("all");
+  const [readinessByCase, setReadinessByCase] = useState<Record<string, Set<string>>>({});
 
   const sorted = useMemo(() => sortHandoffs(handoffs), [handoffs]);
   const filteredQueue = useMemo(() => {
@@ -684,6 +751,24 @@ function HospitalContent() {
     }
   }
 
+  const activeReadiness = useMemo(() => {
+    if (!selected) return new Set<string>();
+    return readinessByCase[selected.id] ?? new Set<string>();
+  }, [selected, readinessByCase]);
+
+  const toggleReadiness = useCallback(
+    (item: string) => {
+      if (!selected) return;
+      setReadinessByCase((prev) => {
+        const current = new Set(prev[selected.id] ?? []);
+        if (current.has(item)) current.delete(item);
+        else current.add(item);
+        return { ...prev, [selected.id]: current };
+      });
+    },
+    [selected],
+  );
+
   const showingAccepted =
     accepted &&
     selected?.id === accepted.id &&
@@ -849,6 +934,8 @@ function HospitalContent() {
             showPicker={showPicker}
             channel={channel}
             channelDraft={channelDraft}
+            readiness={activeReadiness}
+            onToggleReadiness={toggleReadiness}
             onChannelDraft={setChannelDraft}
             onAccept={() => void onAccept(selected)}
             onOpenPicker={() => setShowPicker(true)}
