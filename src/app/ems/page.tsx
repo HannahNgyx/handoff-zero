@@ -136,12 +136,20 @@ function EmsContent() {
   const wroteOralRef = useRef<Record<string, string>>({});
   const patchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const casesRef = useRef(cases);
-  casesRef.current = cases;
+  const activeCaseRef = useRef<ActiveHandoff | null>(null);
 
   const activeCase = useMemo(
     () => cases.find((c) => c.id === activeCaseId) ?? null,
     [cases, activeCaseId],
   );
+
+  useEffect(() => {
+    casesRef.current = cases;
+  }, [cases]);
+
+  useEffect(() => {
+    activeCaseRef.current = activeCase;
+  }, [activeCase]);
 
   const card = activeCaseId
     ? (cardsById[activeCaseId] ?? activeCase?.card ?? localCard)
@@ -290,17 +298,28 @@ function EmsContent() {
     if (activeCase?.encounterId) void refreshChannel(activeCase.encounterId);
   });
 
-  // Debounced live patch for active case only.
+  // Debounced live patch for active case only. Depend on card + case id, not the
+  // whole handoff object — a successful patch used to replace that object and
+  // retrigger another write.
   useEffect(() => {
-    const handoff = activeCase;
+    const handoff = activeCaseRef.current;
     if (!handoff?.communicationId && !handoff?.encounterId) return;
     if (patchTimer.current) clearTimeout(patchTimer.current);
     patchTimer.current = setTimeout(() => {
-      void patchHandoffCard(medplum, handoff, card)
+      const current = activeCaseRef.current;
+      if (!current?.communicationId && !current?.encounterId) return;
+      void patchHandoffCard(medplum, current, card)
         .then((next) => {
-          setCases((list) =>
-            list.map((c) => (c.id === next.id ? { ...next, card } : c)),
-          );
+          setCases((list) => {
+            let changed = false;
+            const mapped = list.map((c) => {
+              if (c.id !== next.id) return c;
+              if (c.communicationId === next.communicationId) return c;
+              changed = true;
+              return { ...next, card };
+            });
+            return changed ? mapped : list;
+          });
         })
         .catch((err) => {
           setStatus(err instanceof Error ? err.message : "Live patch failed");
@@ -309,11 +328,11 @@ function EmsContent() {
     return () => {
       if (patchTimer.current) clearTimeout(patchTimer.current);
     };
-  }, [card, medplum, activeCase]);
+  }, [card, medplum, activeCase?.id]);
 
   useEffect(() => {
     const value = card.lastOralIntake?.trim();
-    const handoff = activeCase;
+    const handoff = activeCaseRef.current;
     if (!value || !handoff?.encounterId || !handoff.patientId) return;
     const key = `${handoff.id}:${value}`;
     if (wroteOralRef.current[key]) return;
@@ -334,7 +353,7 @@ function EmsContent() {
         setStatus(err instanceof Error ? err.message : "Failed to write oral intake");
       }
     })();
-  }, [card.lastOralIntake, activeCase, medplum]);
+  }, [card.lastOralIntake, activeCase?.id, activeCase?.encounterId, activeCase?.patientId, medplum]);
 
   // Clear satisfied info-asks when blood type lands on the card (patched live to hospital).
   useEffect(() => {

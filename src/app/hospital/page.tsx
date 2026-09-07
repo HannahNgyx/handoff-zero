@@ -36,7 +36,7 @@ import {
 } from "@/lib/trauma";
 import type { Task } from "@medplum/fhirtypes";
 import { useMedplum, useSubscription } from "@medplum/react-hooks";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 function nowStamp() {
   return new Date().toLocaleTimeString("en-US", {
@@ -430,12 +430,16 @@ function HospitalContent() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [events, setEvents] = useState<string[]>([]);
-  const [seenIds, setSeenIds] = useState<Set<string>>(new Set());
-  const [seenConfirmed, setSeenConfirmed] = useState<Set<string>>(new Set());
   const [dirtyIds, setDirtyIds] = useState<Set<string>>(new Set());
   const [showPicker, setShowPicker] = useState(false);
   const [queueFilter, setQueueFilter] = useState<"all" | "incoming" | "confirmed">("all");
   const [readinessByCase, setReadinessByCase] = useState<Record<string, Set<string>>>({});
+  const seenIdsRef = useRef(new Set<string>());
+  const seenConfirmedRef = useRef(new Set<string>());
+  const selectedIdRef = useRef(selectedId);
+  const acceptedRef = useRef(accepted);
+  const handoffsRef = useRef(handoffs);
+  const focusEncounterRef = useRef<string | undefined>(undefined);
 
   const sorted = useMemo(() => sortHandoffs(handoffs), [handoffs]);
   const filteredQueue = useMemo(() => {
@@ -448,6 +452,19 @@ function HospitalContent() {
     (accepted?.id === selectedId ? accepted : null) ??
     sorted[0] ??
     accepted;
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
+  useEffect(() => {
+    acceptedRef.current = accepted;
+  }, [accepted]);
+  useEffect(() => {
+    handoffsRef.current = handoffs;
+  }, [handoffs]);
+  useEffect(() => {
+    focusEncounterRef.current = selected?.encounterId;
+  }, [selected?.encounterId]);
 
   const pushEvent = useCallback((line: string) => {
     setEvents((e) => [`${nowStamp()}  ${line}`, ...e].slice(0, 40));
@@ -471,75 +488,72 @@ function HospitalContent() {
   const refresh = useCallback(async () => {
     try {
       const list = await loadActiveHandoffs(medplum);
+      const selectedIdNow = selectedIdRef.current;
+      const acceptedNow = acceptedRef.current;
+      const prev = handoffsRef.current;
       setHandoffs(list);
       setError(null);
 
-      setSeenIds((prev) => {
-        const next = new Set(prev);
+      for (const h of list) {
+        if (!seenIdsRef.current.has(h.id)) {
+          seenIdsRef.current.add(h.id);
+          const t = nowStamp();
+          const id = caseShortId(h);
+          setEvents((e) =>
+            [
+              `${t}  [${id}] Handoff started (incoming)`,
+              `${t}  [${id}] Encounter created`,
+              ...e,
+            ].slice(0, 40),
+          );
+        }
+        if (h.handoffStatus === "confirmed" && !seenConfirmedRef.current.has(h.id)) {
+          seenConfirmedRef.current.add(h.id);
+          const t = nowStamp();
+          setEvents((e) =>
+            [`${t}  [${caseShortId(h)}] Handoff confirmed by EMS`, ...e].slice(0, 40),
+          );
+        }
+      }
+
+      setDirtyIds((dirty) => {
+        let changed = false;
+        const next = new Set(dirty);
         for (const h of list) {
-          if (!next.has(h.id)) {
+          if (h.id === selectedIdNow) continue;
+          const old = prev.find((p) => p.id === h.id);
+          if (old && old.transmittedAt !== h.transmittedAt && !next.has(h.id)) {
             next.add(h.id);
-            const t = nowStamp();
-            const id = caseShortId(h);
-            setEvents((e) =>
-              [
-                `${t}  [${id}] Handoff started (incoming)`,
-                `${t}  [${id}] Encounter created`,
-                ...e,
-              ].slice(0, 40),
-            );
+            changed = true;
           }
         }
-        return next;
+        return changed ? next : dirty;
       });
 
-      setSeenConfirmed((prev) => {
-        const next = new Set(prev);
-        for (const h of list) {
-          if (h.handoffStatus === "confirmed" && !next.has(h.id)) {
-            next.add(h.id);
-            const t = nowStamp();
-            const id = caseShortId(h);
-            setEvents((e) =>
-              [`${t}  [${id}] Handoff confirmed by EMS`, ...e].slice(0, 40),
-            );
-          }
-        }
-        return next;
-      });
-
-      setDirtyIds((prev) => {
-        const next = new Set(prev);
-        for (const h of list) {
-          if (h.id !== selectedId) next.add(h.id);
-        }
-        return next;
-      });
-
-      if (!selectedId && list[0]) setSelectedId(list[0].id);
+      if (!selectedIdNow && list[0]) setSelectedId(list[0].id);
 
       const focus =
-        list.find((h) => h.id === selectedId) ??
-        (accepted?.id === selectedId ? accepted : null);
+        list.find((h) => h.id === selectedIdNow) ??
+        (acceptedNow?.id === selectedIdNow ? acceptedNow : null);
       if (focus?.encounterId) {
         await refreshChannel(focus.encounterId);
-        if (accepted?.id === focus.id) {
+        if (acceptedNow?.id === focus.id) {
           const prep = await loadPrepTasks(medplum, focus.encounterId);
           setTasks(prep);
           const oral = await loadOralIntake(medplum, focus.encounterId);
-          if (oral && accepted.card.lastOralIntake !== oral) {
+          if (oral && acceptedNow.card.lastOralIntake !== oral) {
             setAccepted({
-              ...accepted,
-              card: { ...accepted.card, lastOralIntake: oral },
+              ...acceptedNow,
+              card: { ...acceptedNow.card, lastOralIntake: oral },
             });
-            pushEvent(`[${caseShortId(accepted)}] Oral intake: ${oral}`);
+            pushEvent(`[${caseShortId(acceptedNow)}] Oral intake: ${oral}`);
           }
         }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load handoffs");
     }
-  }, [medplum, selectedId, accepted, pushEvent, refreshChannel]);
+  }, [medplum, pushEvent, refreshChannel]);
 
   useEffect(() => {
     void refresh();
@@ -556,6 +570,10 @@ function HospitalContent() {
     }
   }, [selectedId]);
 
+  useEffect(() => {
+    void refreshChannel(selected?.encounterId);
+  }, [selected?.encounterId, refreshChannel]);
+
   useSubscription(HANDOFF_SR_CRITERIA, () => {
     void refresh();
   });
@@ -563,16 +581,23 @@ function HospitalContent() {
     void refresh();
   });
   useSubscription(BRIDGE_COMM_CRITERIA, () => {
-    void refresh();
+    void refreshChannel(focusEncounterRef.current);
   });
   useSubscription(CHANNEL_COMM_CRITERIA, () => {
-    void refresh();
+    void refreshChannel(focusEncounterRef.current);
   });
   useSubscription(INFO_REQUEST_COMM_CRITERIA, () => {
-    void refresh();
+    void refreshChannel(focusEncounterRef.current);
   });
   useSubscription(`Task?_tag=https://traumatink.app/fhir/tag|prearrival-handoff`, () => {
-    void refresh();
+    const encounterId = focusEncounterRef.current;
+    const acceptedNow = acceptedRef.current;
+    if (!encounterId || !acceptedNow) return;
+    void loadPrepTasks(medplum, encounterId)
+      .then(setTasks)
+      .catch(() => {
+        /* ignore */
+      });
   });
   useSubscription(ORAL_INTAKE_OBS_CRITERIA, () => {
     void refresh();

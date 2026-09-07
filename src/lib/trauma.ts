@@ -36,6 +36,22 @@ export const COMMON_INTERVENTIONS = [
   "Large Bore IV",
 ] as const;
 
+/** Append incoming labels without duplicates (case-insensitive). */
+export function mergeInterventions(
+  current: string[] | undefined,
+  incoming: string[] | undefined,
+): string[] {
+  const out = [...(current ?? [])];
+  for (const item of incoming ?? []) {
+    const trimmed = item.trim();
+    if (!trimmed) continue;
+    if (!out.some((x) => x.toLowerCase() === trimmed.toLowerCase())) {
+      out.push(trimmed);
+    }
+  }
+  return out;
+}
+
 export const EMPTY_TRAUMA_CARD: TraumaCard = {
   age: null,
   sex: null,
