@@ -123,6 +123,14 @@ function parseLocationId(location: string | undefined, resourceType: string): st
   return location.split("/")[1]?.split("/_")[0];
 }
 
+/** First Communication in a Medplum subscription Bundle, if any. */
+export function communicationFromBundle(bundle: Bundle): Communication | undefined {
+  const entry = bundle.entry?.find((e) => e.resource?.resourceType === "Communication");
+  return entry?.resource?.resourceType === "Communication"
+    ? entry.resource
+    : undefined;
+}
+
 export function handoffFromBatchResult(
   card: TraumaCard,
   result: Bundle,

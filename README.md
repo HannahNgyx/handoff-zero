@@ -143,6 +143,8 @@ handoff-zero/
     │       └── handoff/route.ts          # Legacy stub (writes happen in browser Medplum client)
     ├── components/
     │   ├── Providers.tsx       # Medplum provider, login, AuthGate, WS status badge, chrome
+    │   ├── EtaCountdown.tsx    # Live ETA MM:SS from etaCapturedAt
+    │   ├── TraumaCardFields.tsx # Shared vitals / injury / allergy rows
     │   └── VoiceHandoff.tsx    # Deepgram agent, function calling, inject on hospital events
     └── lib/
         ├── trauma.ts           # TraumaCard types, BP/flags, missing fields, text parse, case helpers

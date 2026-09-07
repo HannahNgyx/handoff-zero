@@ -104,6 +104,16 @@ export function getMissingFields(card: TraumaCard): string[] {
   return MISSING_CHECKS.filter(({ key }) => !card[key]).map(({ label }) => label);
 }
 
+/** True once any core demographic / mechanism / vital / injury field is present. */
+export function hasClinicalData(card: TraumaCard): boolean {
+  return (
+    card.age != null ||
+    Boolean(card.mechanism) ||
+    card.vitals.bpSystolic != null ||
+    Boolean(card.injury)
+  );
+}
+
 export function flagBp(systolic: number | null): VitalFlag {
   if (systolic == null) return null;
   if (systolic < 90) return "LOW";
@@ -323,22 +333,22 @@ export function caseShortId(handoff: Pick<ActiveHandoff, "serviceRequestId" | "i
 }
 
 export function caseTitle(handoff: ActiveHandoff): string {
-  const hasClinical =
-    handoff.card.age != null ||
-    handoff.card.mechanism ||
-    handoff.card.vitals.bpSystolic != null ||
-    handoff.card.injury;
-  return hasClinical ? patientLine(handoff.card) : "Awaiting clinical details…";
+  return hasClinicalData(handoff.card)
+    ? patientLine(handoff.card)
+    : "Awaiting clinical details…";
 }
 
-/** Confirmed first, then soonest ETA, then newest. */
-export function sortHandoffs(list: ActiveHandoff[]): ActiveHandoff[] {
+/** Confirmed first, then soonest remaining ETA, then newest. */
+export function sortHandoffs(
+  list: ActiveHandoff[],
+  now = Date.now(),
+): ActiveHandoff[] {
   return [...list].sort((a, b) => {
     if (a.handoffStatus !== b.handoffStatus) {
       return a.handoffStatus === "confirmed" ? -1 : 1;
     }
-    const etaA = a.card.etaMinutes ?? 999;
-    const etaB = b.card.etaMinutes ?? 999;
+    const etaA = etaRemainingMs(a.card, now) ?? Number.POSITIVE_INFINITY;
+    const etaB = etaRemainingMs(b.card, now) ?? Number.POSITIVE_INFINITY;
     if (etaA !== etaB) return etaA - etaB;
     return (b.transmittedAt || "").localeCompare(a.transmittedAt || "");
   });
@@ -374,6 +384,8 @@ export function applyHandoffText(card: TraumaCard, text: string): TraumaCard {
 
   if (/motorcycle|mcc|bike/.test(lower)) {
     next.mechanism = "Motorcycle collision";
+  } else if (/pedestrian/.test(lower)) {
+    next.mechanism = "Pedestrian struck";
   } else if (/mvc|motor\s*vehicle|car\s*accident/.test(lower)) {
     next.mechanism = "Motor vehicle collision";
   } else if (/fall/.test(lower)) {
@@ -395,7 +407,14 @@ export function applyHandoffText(card: TraumaCard, text: string): TraumaCard {
   if (gcs) next.vitals.gcs = Number(gcs[1]);
 
   if (/femur/.test(lower)) {
-    next.injury = "Suspected left femur fracture";
+    const side = /\bright\b/.test(lower)
+      ? "right"
+      : /\bleft\b/.test(lower)
+        ? "left"
+        : null;
+    next.injury = side
+      ? `Suspected ${side} femur fracture`
+      : "Suspected femur fracture";
   } else if (/fracture|injury/.test(lower) && !next.injury) {
     next.injury = "Suspected traumatic injury";
   }
@@ -429,26 +448,20 @@ export function applyHandoffText(card: TraumaCard, text: string): TraumaCard {
   if (oral?.[1]) next.lastOralIntake = oral[1].trim().slice(0, 80);
 
   const parsedInterventions: string[] = [...(next.interventions ?? [])];
-  if (/tourniquet|\btq\b/.test(lower) && !parsedInterventions.includes("Tourniquet")) {
-    parsedInterventions.push("Tourniquet");
-  }
-  if (/pelvic\s*binder|binder/.test(lower) && !parsedInterventions.includes("Pelvic Binder")) {
-    parsedInterventions.push("Pelvic Binder");
-  }
-  if (/txa|tranexamic/.test(lower) && !parsedInterventions.includes("TXA")) {
-    parsedInterventions.push("TXA");
-  }
-  if (/needle\s*decompression|thoracostomy/.test(lower) && !parsedInterventions.includes("Needle Decompression")) {
-    parsedInterventions.push("Needle Decompression");
-  }
-  if (/intubat|sga|supraglottic|et\s*tube/.test(lower) && !parsedInterventions.includes("Intubated / SGA")) {
-    parsedInterventions.push("Intubated / SGA");
-  }
-  if (/blood\s*product|whole\s*blood|blood\s*given/.test(lower) && !parsedInterventions.includes("Blood Products")) {
-    parsedInterventions.push("Blood Products");
-  }
-  if (/large\s*bore|18g|16g|14g|iv|intraosseous|\bio\b/.test(lower) && !parsedInterventions.includes("Large Bore IV")) {
-    parsedInterventions.push("Large Bore IV");
+  const interventionPatterns: { label: (typeof COMMON_INTERVENTIONS)[number]; re: RegExp }[] = [
+    { label: "Tourniquet", re: /\btourniquet\b|\btq\b/ },
+    { label: "Pelvic Binder", re: /pelvic\s*binder|\bbinder\b/ },
+    { label: "TXA", re: /\btxa\b|tranexamic/ },
+    { label: "Needle Decompression", re: /needle\s*decompression|thoracostomy/ },
+    { label: "Intubated / SGA", re: /intubat|\bsga\b|supraglottic|\bet\s*tube\b/ },
+    { label: "Blood Products", re: /blood\s*product|whole\s*blood|blood\s*given/ },
+    // Word-bounded IV/IO so "positive" / "given" / "arrival" do not match.
+    { label: "Large Bore IV", re: /large\s*bore|\b(?:18|16|14)\s*g(?:auge)?\b|\bintraosseous\b|\b(?:i\.?v\.?|io)\b/ },
+  ];
+  for (const { label, re } of interventionPatterns) {
+    if (re.test(lower) && !parsedInterventions.includes(label)) {
+      parsedInterventions.push(label);
+    }
   }
   if (parsedInterventions.length > 0) {
     next.interventions = parsedInterventions;

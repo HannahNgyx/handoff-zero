@@ -2,6 +2,7 @@
 
 import { AppChrome } from "@/components/Providers";
 import { EtaCountdown } from "@/components/EtaCountdown";
+import { TraumaCardFields } from "@/components/TraumaCardFields";
 import {
   acceptHandoff,
   BRIDGE_COMM_CRITERIA,
@@ -23,12 +24,9 @@ import {
   type InfoTopicId,
 } from "@/lib/fhir/handoff";
 import {
-  calculateShockIndex,
   caseShortId,
   caseTitle,
-  formatBp,
   flagBp,
-  flagGcs,
   flagHr,
   getSuggestedAsks,
   getTraumaTriageAssessment,
@@ -36,18 +34,9 @@ import {
   sortHandoffs,
   type ActiveHandoff,
 } from "@/lib/trauma";
-import type { Bundle, Task } from "@medplum/fhirtypes";
+import type { Task } from "@medplum/fhirtypes";
 import { useMedplum, useSubscription } from "@medplum/react-hooks";
 import { useCallback, useEffect, useMemo, useState } from "react";
-
-function Flag({ value }: { value: string | null }) {
-  if (!value) return null;
-  return (
-    <span className="ml-2 text-[10px] font-bold tracking-wider text-rose-400">
-      {value}
-    </span>
-  );
-}
 
 function nowStamp() {
   return new Date().toLocaleTimeString("en-US", {
@@ -157,6 +146,7 @@ const TRAUMA_BAY_CHECKLIST = [
 
 function CaseDetail({
   handoff,
+  accepted,
   busy,
   showPicker,
   channel,
@@ -173,6 +163,7 @@ function CaseDetail({
   onSendChannel,
 }: {
   handoff: ActiveHandoff;
+  accepted?: boolean;
   busy: boolean;
   showPicker: boolean;
   channel: ChannelEntry[];
@@ -195,7 +186,7 @@ function CaseDetail({
   return (
     <section
       className={`rounded-lg border bg-zinc-900/50 p-5 ${
-        handoff.handoffStatus === "confirmed"
+        accepted || handoff.handoffStatus === "confirmed"
           ? "border-teal-700/40"
           : "border-amber-700/40"
       }`}
@@ -206,16 +197,26 @@ function CaseDetail({
             <p className="font-mono text-[11px] text-zinc-500">
               Case · {caseShortId(handoff)}
             </p>
-            <StatusBadge status={handoff.handoffStatus} />
+            {accepted ? (
+              <span className="inline-block rounded bg-teal-950 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-teal-300 ring-1 ring-teal-700/50">
+                Accepted
+              </span>
+            ) : (
+              <StatusBadge status={handoff.handoffStatus} />
+            )}
           </div>
           <h2 className="mt-1 text-lg font-semibold tracking-tight text-zinc-50">
             {caseTitle(handoff)}
           </h2>
-          {handoff.handoffStatus === "incoming" && (
+          {accepted ? (
+            <p className="mt-1 text-xs text-teal-200/70">
+              Trauma Bay 2 is being prepared. Acknowledgment sent to EMS.
+            </p>
+          ) : handoff.handoffStatus === "incoming" ? (
             <p className="mt-1 text-xs text-amber-200/70">
               Live pre-arrival — not yet confirmed by EMS. Actions still available.
             </p>
-          )}
+          ) : null}
         </div>
         <EtaCountdown card={card} />
       </div>
@@ -240,98 +241,7 @@ function CaseDetail({
         </div>
       )}
 
-      <dl className="mt-4 space-y-2.5 font-mono text-sm">
-        <div className="flex justify-between gap-4">
-          <dt className="text-zinc-500">
-            Blood pressure
-            <span className="ml-1 text-[10px] text-zinc-600">(BP)</span>
-          </dt>
-          <dd>
-            {formatBp(card)}
-            <span className="ml-1 text-[10px] text-zinc-600">mmHg</span>
-            <Flag value={flagBp(card.vitals.bpSystolic)} />
-          </dd>
-        </div>
-        <div className="flex justify-between gap-4">
-          <dt className="text-zinc-500">Heart rate</dt>
-          <dd>
-            {card.vitals.heartRate ?? "—"}
-            <Flag value={flagHr(card.vitals.heartRate)} />
-          </dd>
-        </div>
-        <div className="flex justify-between gap-4">
-          <dt className="text-zinc-500">GCS</dt>
-          <dd>
-            {card.vitals.gcs ?? "—"}
-            <Flag value={flagGcs(card.vitals.gcs)} />
-          </dd>
-        </div>
-        {(() => {
-          const si = calculateShockIndex(
-            card.vitals.heartRate,
-            card.vitals.bpSystolic,
-          );
-          if (!si) return null;
-          return (
-            <div className="flex justify-between gap-4">
-              <dt className="text-zinc-500">Shock Index (HR/SBP)</dt>
-              <dd className="font-mono">
-                {si.value}
-                <span
-                  className={`ml-2 text-[10px] font-bold tracking-wider ${
-                    si.flag === "CRITICAL"
-                      ? "text-rose-400"
-                      : si.flag === "ELEVATED"
-                        ? "text-amber-400"
-                        : "text-emerald-400"
-                  }`}
-                >
-                  {si.flag}
-                </span>
-              </dd>
-            </div>
-          );
-        })()}
-        <div className="flex justify-between gap-4">
-          <dt className="text-zinc-500">Injury</dt>
-          <dd className="text-right">{card.injury ?? "—"}</dd>
-        </div>
-        <div className="flex justify-between gap-4">
-          <dt className="text-zinc-500">Allergy</dt>
-          <dd className="font-semibold uppercase text-rose-300">
-            {card.allergy ?? "—"}
-          </dd>
-        </div>
-        <div className="flex justify-between gap-4">
-          <dt className="text-zinc-500">Blood type</dt>
-          <dd className="font-semibold uppercase text-teal-200">
-            {card.bloodType ?? "—"}
-          </dd>
-        </div>
-        <div className="flex justify-between gap-4">
-          <dt className="text-zinc-500">Last oral intake</dt>
-          <dd className="text-right">{card.lastOralIntake ?? "—"}</dd>
-        </div>
-        <div className="flex justify-between gap-4">
-          <dt className="text-zinc-500">Emergency contact</dt>
-          <dd className="text-right">{card.emergencyContact ?? "—"}</dd>
-        </div>
-        {card.interventions && card.interventions.length > 0 && (
-          <div className="flex items-start justify-between gap-4 pt-1">
-            <dt className="text-zinc-500">Interventions</dt>
-            <dd className="flex flex-wrap justify-end gap-1.5 text-right">
-              {card.interventions.map((intv) => (
-                <span
-                  key={intv}
-                  className="inline-block rounded bg-emerald-950/80 px-2 py-0.5 text-[11px] font-semibold text-emerald-300 ring-1 ring-emerald-600/50"
-                >
-                  {intv}
-                </span>
-              ))}
-            </dd>
-          </div>
-        )}
-      </dl>
+      <TraumaCardFields card={card} />
 
       <div className="mt-6 border-t border-zinc-800 pt-4">
         <div className="flex items-center justify-between gap-2">
@@ -373,14 +283,16 @@ function CaseDetail({
       </div>
 
       <div className="mt-6 flex flex-wrap gap-2">
-        <button
-          type="button"
-          disabled={busy}
-          onClick={onAccept}
-          className="rounded-md bg-teal-700 px-3 py-2 text-sm font-medium text-white hover:bg-teal-600 disabled:opacity-50"
-        >
-          {busy ? "Working…" : "Accept Patient"}
-        </button>
+        {!accepted && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onAccept}
+            className="rounded-md bg-teal-700 px-3 py-2 text-sm font-medium text-white hover:bg-teal-600 disabled:opacity-50"
+          >
+            {busy ? "Working…" : "Accept Patient"}
+          </button>
+        )}
         <button
           type="button"
           disabled={busy || showPicker}
@@ -397,14 +309,16 @@ function CaseDetail({
         >
           Request live connect
         </button>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={onDecline}
-          className="rounded-md border border-rose-900/60 px-3 py-2 text-sm text-rose-200 hover:bg-rose-950/40 disabled:opacity-50"
-        >
-          Cannot Accept
-        </button>
+        {!accepted && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onDecline}
+            className="rounded-md border border-rose-900/60 px-3 py-2 text-sm text-rose-200 hover:bg-rose-950/40 disabled:opacity-50"
+          >
+            Cannot Accept
+          </button>
+        )}
       </div>
 
       {showPicker && (
@@ -874,62 +788,10 @@ function HospitalContent() {
               Listening for EMS Incoming drafts and Confirm…
             </p>
           </section>
-        ) : showingAccepted ? (
-          <section className="rounded-lg border border-teal-800/50 bg-zinc-900/40 p-5">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-teal-400">
-              Transfer accepted · Case · {caseShortId(accepted)}
-            </p>
-            <h2 className="mt-1 text-lg font-semibold text-zinc-50">
-              {patientLine(accepted.card)}
-            </h2>
-            <p className="mt-2 text-sm text-zinc-400">
-              Trauma Bay 2 is being prepared. Acknowledgment sent to EMS.
-            </p>
-            <dl className="mt-4 space-y-2 font-mono text-sm">
-              <div className="flex justify-between gap-4">
-                <dt className="text-zinc-500">Blood type</dt>
-                <dd className="uppercase text-teal-200">
-                  {accepted.card.bloodType ?? "—"}
-                </dd>
-              </div>
-              <div className="flex justify-between gap-4">
-                <dt className="text-zinc-500">Last oral intake</dt>
-                <dd>{accepted.card.lastOralIntake ?? "—"}</dd>
-              </div>
-            </dl>
-            <div className="mt-5 flex flex-wrap gap-2">
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => setShowPicker(true)}
-                className="rounded-md border border-amber-700/60 px-3 py-2 text-sm text-amber-100"
-              >
-                Request More Info
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void onBridge(accepted)}
-                className="rounded-md border border-sky-800/60 px-3 py-2 text-sm text-sky-100"
-              >
-                Request live connect
-              </button>
-            </div>
-            {showPicker && (
-              <div className="mt-4">
-                <InfoRequestPicker
-                  busy={busy}
-                  onSubmit={(topics, note) =>
-                    void onSubmitInfo(accepted, topics, note)
-                  }
-                  onCancel={() => setShowPicker(false)}
-                />
-              </div>
-            )}
-          </section>
         ) : (
           <CaseDetail
             handoff={selected}
+            accepted={Boolean(showingAccepted)}
             busy={busy}
             showPicker={showPicker}
             channel={channel}

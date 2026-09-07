@@ -2,11 +2,13 @@
 
 import { AppChrome } from "@/components/Providers";
 import { EtaCountdown } from "@/components/EtaCountdown";
+import { TraumaCardFields } from "@/components/TraumaCardFields";
 import { VoiceHandoff } from "@/components/VoiceHandoff";
 import {
   ACCEPTANCE_COMM_CRITERIA,
   BRIDGE_COMM_CRITERIA,
   CHANNEL_COMM_CRITERIA,
+  communicationFromBundle,
   confirmHandoff,
   createDraftHandoff,
   INFO_REQUEST_COMM_CRITERIA,
@@ -20,24 +22,18 @@ import {
 } from "@/lib/fhir/handoff";
 import {
   applyHandoffText,
-  calculateShockIndex,
   caseShortId,
   caseTitle,
   COMMON_INTERVENTIONS,
   DEMO_PRESETS,
-  DEMO_TRAUMA_CARD,
   EMPTY_TRAUMA_CARD,
-  formatBp,
-  flagBp,
-  flagGcs,
-  flagHr,
   getMissingFields,
+  hasClinicalData,
   patientLine,
   type ActiveHandoff,
-  type DemoPreset,
   type TraumaCard,
 } from "@/lib/trauma";
-import type { Bundle, Communication } from "@medplum/fhirtypes";
+import type { Bundle } from "@medplum/fhirtypes";
 import { useMedplum, useSubscription } from "@medplum/react-hooks";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -48,15 +44,6 @@ type OpenInfoAsk = {
   serviceRequestId?: string;
 };
 
-function Flag({ value }: { value: string | null }) {
-  if (!value) return null;
-  return (
-    <span className="ml-2 text-[10px] font-bold tracking-wider text-rose-400">
-      {value}
-    </span>
-  );
-}
-
 function TraumaCardView({
   card,
   handoff,
@@ -65,11 +52,7 @@ function TraumaCardView({
   handoff: ActiveHandoff | null;
 }) {
   const missing = getMissingFields(card);
-  const hasAny =
-    card.age != null ||
-    card.mechanism ||
-    card.vitals.bpSystolic != null ||
-    card.injury;
+  const hasAny = hasClinicalData(card);
 
   return (
     <section className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-5">
@@ -109,102 +92,7 @@ function TraumaCardView({
           handoff. Use New patient for a second case.
         </p>
       ) : (
-        <dl className="mt-4 space-y-2.5 font-mono text-sm">
-          <div className="flex justify-between gap-4">
-            <dt className="text-zinc-500">
-              Blood pressure
-              <span className="ml-1 text-[10px] text-zinc-600">(BP)</span>
-            </dt>
-            <dd>
-              {formatBp(card)}
-              <span className="ml-1 text-[10px] text-zinc-600">mmHg</span>
-              <Flag value={flagBp(card.vitals.bpSystolic)} />
-            </dd>
-          </div>
-          <div className="flex justify-between gap-4">
-            <dt className="text-zinc-500">Heart rate</dt>
-            <dd>
-              {card.vitals.heartRate ?? "—"}
-              <Flag value={flagHr(card.vitals.heartRate)} />
-            </dd>
-          </div>
-          <div className="flex justify-between gap-4">
-            <dt className="text-zinc-500">GCS</dt>
-            <dd>
-              {card.vitals.gcs ?? "—"}
-              <Flag value={flagGcs(card.vitals.gcs)} />
-            </dd>
-          </div>
-          {(() => {
-            const si = calculateShockIndex(
-              card.vitals.heartRate,
-              card.vitals.bpSystolic,
-            );
-            if (!si) return null;
-            return (
-              <div className="flex justify-between gap-4">
-                <dt className="text-zinc-500">Shock Index (HR/SBP)</dt>
-                <dd className="font-mono">
-                  {si.value}
-                  <span
-                    className={`ml-2 text-[10px] font-bold tracking-wider ${
-                      si.flag === "CRITICAL"
-                        ? "text-rose-400"
-                        : si.flag === "ELEVATED"
-                          ? "text-amber-400"
-                          : "text-emerald-400"
-                    }`}
-                  >
-                    {si.flag}
-                  </span>
-                </dd>
-              </div>
-            );
-          })()}
-          <div className="flex justify-between gap-4">
-            <dt className="text-zinc-500">Injury</dt>
-            <dd className="text-right">{card.injury ?? "—"}</dd>
-          </div>
-          <div className="flex justify-between gap-4">
-            <dt className="text-zinc-500">Allergy</dt>
-            <dd className="font-semibold uppercase text-rose-300">
-              {card.allergy ?? "—"}
-            </dd>
-          </div>
-          <div className="flex justify-between gap-4">
-            <dt className="text-zinc-500">Anticoagulants</dt>
-            <dd>{card.anticoagulants ?? "—"}</dd>
-          </div>
-          <div className="flex justify-between gap-4">
-            <dt className="text-zinc-500">Blood type</dt>
-            <dd className="font-semibold uppercase text-teal-200">
-              {card.bloodType ?? "—"}
-            </dd>
-          </div>
-          <div className="flex justify-between gap-4">
-            <dt className="text-zinc-500">Last oral intake</dt>
-            <dd>{card.lastOralIntake ?? "—"}</dd>
-          </div>
-          <div className="flex justify-between gap-4">
-            <dt className="text-zinc-500">Emergency contact</dt>
-            <dd className="text-right">{card.emergencyContact ?? "—"}</dd>
-          </div>
-          {card.interventions && card.interventions.length > 0 && (
-            <div className="flex items-start justify-between gap-4 pt-1">
-              <dt className="text-zinc-500">Interventions</dt>
-              <dd className="flex flex-wrap justify-end gap-1.5 text-right">
-                {card.interventions.map((intv) => (
-                  <span
-                    key={intv}
-                    className="inline-block rounded bg-emerald-950/80 px-2 py-0.5 text-[11px] font-semibold text-emerald-300 ring-1 ring-emerald-600/50"
-                  >
-                    {intv}
-                  </span>
-                ))}
-              </dd>
-            </div>
-          )}
-        </dl>
+        <TraumaCardFields card={card} />
       )}
 
       {hasAny && missing.length > 0 && (
@@ -273,8 +161,7 @@ function EmsContent() {
     [activeCaseId],
   );
 
-  const hasData =
-    card.age != null || card.mechanism || card.vitals.bpSystolic != null;
+  const hasData = hasClinicalData(card);
 
   const refreshChannel = useCallback(
     async (encounterId: string | undefined) => {
@@ -296,8 +183,7 @@ function EmsContent() {
   }, [activeCase?.encounterId, refreshChannel]);
 
   useSubscription(ACCEPTANCE_COMM_CRITERIA, (bundle: Bundle) => {
-    const entry = bundle.entry?.find((e) => e.resource?.resourceType === "Communication");
-    const comm = entry?.resource as Communication | undefined;
+    const comm = communicationFromBundle(bundle);
     const raw = comm?.payload?.[0]?.contentString;
     if (!raw) return;
     try {
@@ -338,8 +224,7 @@ function EmsContent() {
   });
 
   useSubscription(INFO_REQUEST_COMM_CRITERIA, (bundle: Bundle) => {
-    const entry = bundle.entry?.find((e) => e.resource?.resourceType === "Communication");
-    const comm = entry?.resource as Communication | undefined;
+    const comm = communicationFromBundle(bundle);
     const raw = comm?.payload?.[0]?.contentString;
     if (!raw) return;
     const parsed = parseInfoRequestPayload(raw);
@@ -371,8 +256,7 @@ function EmsContent() {
   });
 
   useSubscription(BRIDGE_COMM_CRITERIA, (bundle: Bundle) => {
-    const entry = bundle.entry?.find((e) => e.resource?.resourceType === "Communication");
-    const comm = entry?.resource as Communication | undefined;
+    const comm = communicationFromBundle(bundle);
     const raw = comm?.payload?.[0]?.contentString;
     if (!raw) return;
     try {
