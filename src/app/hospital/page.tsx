@@ -1,6 +1,7 @@
 "use client";
 
 import { AppChrome } from "@/components/Providers";
+import { CaseChannel, HOSPITAL_QUICK_PHRASES } from "@/components/CaseChannel";
 import { EtaCountdown } from "@/components/EtaCountdown";
 import { TraumaCardFields } from "@/components/TraumaCardFields";
 import {
@@ -351,61 +352,17 @@ function CaseDetail({
       </div>
 
       <div className="mt-6 border-t border-zinc-800 pt-4">
-        <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-          Direct channel
-        </p>
-        <p className="mt-1 text-[11px] text-zinc-600">
-          Medplum Communications for this case (demo bridge — not WebRTC)
-        </p>
-        <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto font-mono text-xs text-zinc-400">
-          {channel.length === 0 ? (
-            <li className="text-zinc-600">No messages yet.</li>
-          ) : (
-            channel.map((m) => (
-              <li key={m.id}>
-                <span className="text-zinc-600">
-                  [{m.type}
-                  {m.from ? ` · ${m.from}` : ""}]
-                </span>{" "}
-                {m.message}
-              </li>
-            ))
-          )}
-        </ul>
-        <div className="mt-2 flex gap-2">
-          <input
-            value={channelDraft}
-            onChange={(e) => onChannelDraft(e.target.value)}
-            placeholder="Message EMS…"
-            className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-3 py-1.5 text-sm"
-          />
-          <button
-            type="button"
-            disabled={busy || !channelDraft.trim()}
-            onClick={onSendChannel}
-            className="rounded-md border border-zinc-600 px-3 py-1.5 text-sm text-zinc-200 disabled:opacity-50"
-          >
-            Send
-          </button>
-        </div>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {[
-            "Trauma Bay 2 Ready",
-            "Trauma Team Activated",
-            "Airway Team Standby",
-            "Direct to CT on arrival",
-          ].map((quick) => (
-            <button
-              key={quick}
-              type="button"
-              disabled={busy}
-              onClick={() => onChannelDraft(quick)}
-              className="rounded border border-zinc-800 bg-zinc-950/60 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
-            >
-              {quick}
-            </button>
-          ))}
-        </div>
+        <CaseChannel
+          channel={channel}
+          emptyLabel="No messages yet."
+          caption="Medplum Communications for this case (demo bridge — not WebRTC)"
+          draft={channelDraft}
+          onDraftChange={onChannelDraft}
+          onSend={onSendChannel}
+          placeholder="Message EMS…"
+          busy={busy}
+          quickPhrases={HOSPITAL_QUICK_PHRASES}
+        />
       </div>
     </section>
   );

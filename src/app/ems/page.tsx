@@ -1,6 +1,7 @@
 "use client";
 
 import { AppChrome } from "@/components/Providers";
+import { CaseChannel, EMS_QUICK_PHRASES } from "@/components/CaseChannel";
 import { EtaCountdown } from "@/components/EtaCountdown";
 import { TraumaCardFields } from "@/components/TraumaCardFields";
 import { VoiceHandoff } from "@/components/VoiceHandoff";
@@ -13,6 +14,8 @@ import {
   createDraftHandoff,
   INFO_REQUEST_COMM_CRITERIA,
   loadCaseChannel,
+  parseAcceptancePayload,
+  parseBridgePayload,
   parseInfoRequestPayload,
   patchHandoffCard,
   postChannelMessage,
@@ -194,40 +197,31 @@ function EmsContent() {
     const comm = communicationFromBundle(bundle);
     const raw = comm?.payload?.[0]?.contentString;
     if (!raw) return;
-    try {
-      const parsed = JSON.parse(raw) as {
-        type?: string;
-        message?: string;
-        serviceRequestId?: string;
-      };
-      if (parsed.type !== "acceptance" && parsed.type !== "decline") return;
-      if (!parsed.message) return;
-      const match = casesRef.current.find(
-        (c) =>
-          !parsed.serviceRequestId ||
-          c.serviceRequestId === parsed.serviceRequestId,
-      );
-      if (match && activeCaseId && match.id !== activeCaseId) {
-        setStatus(
-          parsed.type === "decline"
-            ? `Hospital declined case ${caseShortId(match)} — switch to that case.`
-            : `Hospital accepted case ${caseShortId(match)} — switch to that case.`,
-        );
-        return;
-      }
-      setInjectMessage(parsed.message);
-      setBanner(parsed.message);
+    const parsed = parseAcceptancePayload(raw);
+    if (!parsed) return;
+    const match = casesRef.current.find(
+      (c) =>
+        !parsed.serviceRequestId ||
+        c.serviceRequestId === parsed.serviceRequestId,
+    );
+    if (match && activeCaseId && match.id !== activeCaseId) {
       setStatus(
         parsed.type === "decline"
-          ? "Hospital cannot accept — see message below."
-          : "Hospital accepted — see acknowledgment below.",
+          ? `Hospital declined case ${caseShortId(match)} — switch to that case.`
+          : `Hospital accepted case ${caseShortId(match)} — switch to that case.`,
       );
-      if (parsed.type === "decline" && match) {
-        setCases((list) => list.filter((c) => c.id !== match.id));
-        if (activeCaseId === match.id) setActiveCaseId(null);
-      }
-    } catch {
-      /* ignore */
+      return;
+    }
+    setInjectMessage(parsed.message);
+    setBanner(parsed.message);
+    setStatus(
+      parsed.type === "decline"
+        ? "Hospital cannot accept — see message below."
+        : "Hospital accepted — see acknowledgment below.",
+    );
+    if (parsed.type === "decline" && match) {
+      setCases((list) => list.filter((c) => c.id !== match.id));
+      if (activeCaseId === match.id) setActiveCaseId(null);
     }
   });
 
@@ -267,31 +261,21 @@ function EmsContent() {
     const comm = communicationFromBundle(bundle);
     const raw = comm?.payload?.[0]?.contentString;
     if (!raw) return;
-    try {
-      const parsed = JSON.parse(raw) as {
-        type?: string;
-        message?: string;
-        from?: string;
-        serviceRequestId?: string;
-      };
-      if (parsed.type !== "bridge-request" || !parsed.message) return;
-      if (parsed.from === "ems") return;
-      const match = casesRef.current.find(
-        (c) =>
-          !parsed.serviceRequestId ||
-          c.serviceRequestId === parsed.serviceRequestId,
-      );
-      if (match && activeCaseId && match.id !== activeCaseId) {
-        setStatus(`Live connect request on case ${caseShortId(match)}`);
-        return;
-      }
-      setInjectMessage(parsed.message);
-      setBanner(parsed.message);
-      setStatus("Hospital requested live radio/phone connect.");
-      if (activeCase?.encounterId) void refreshChannel(activeCase.encounterId);
-    } catch {
-      /* ignore */
+    const parsed = parseBridgePayload(raw);
+    if (!parsed || parsed.from === "ems") return;
+    const match = casesRef.current.find(
+      (c) =>
+        !parsed.serviceRequestId ||
+        c.serviceRequestId === parsed.serviceRequestId,
+    );
+    if (match && activeCaseId && match.id !== activeCaseId) {
+      setStatus(`Live connect request on case ${caseShortId(match)}`);
+      return;
     }
+    setInjectMessage(parsed.message);
+    setBanner(parsed.message);
+    setStatus("Hospital requested live radio/phone connect.");
+    if (activeCase?.encounterId) void refreshChannel(activeCase.encounterId);
   });
 
   useSubscription(CHANNEL_COMM_CRITERIA, () => {
@@ -367,26 +351,30 @@ function EmsContent() {
     );
   }, [card.bloodType, activeCase?.serviceRequestId]);
 
-  const openIncoming = useCallback(async () => {
-    if (activeCase) {
-      setStatus(`Case ${caseShortId(activeCase)} already open at hospital.`);
-      return activeCase;
-    }
-    try {
-      const handoff = await createDraftHandoff(medplum, {
-        ...card,
-        etaCapturedAt: card.etaCapturedAt ?? new Date().toISOString(),
-      });
-      setCases((list) => [...list, handoff]);
-      setActiveCaseId(handoff.id);
-      setCardsById((m) => ({ ...m, [handoff.id]: card }));
-      setStatus(`Incoming opened · Case ${caseShortId(handoff)}`);
-      return handoff;
-    } catch (err) {
-      setStatus(err instanceof Error ? err.message : "Failed to open Incoming");
-      return null;
-    }
-  }, [medplum, card, activeCase]);
+  const openIncoming = useCallback(
+    async (seed?: TraumaCard) => {
+      if (activeCase) {
+        setStatus(`Case ${caseShortId(activeCase)} already open at hospital.`);
+        return activeCase;
+      }
+      const payload = seed ?? card;
+      try {
+        const handoff = await createDraftHandoff(medplum, {
+          ...payload,
+          etaCapturedAt: payload.etaCapturedAt ?? new Date().toISOString(),
+        });
+        setCases((list) => [...list, handoff]);
+        setActiveCaseId(handoff.id);
+        setCardsById((m) => ({ ...m, [handoff.id]: payload }));
+        setStatus(`Incoming opened · Case ${caseShortId(handoff)}`);
+        return handoff;
+      } catch (err) {
+        setStatus(err instanceof Error ? err.message : "Failed to open Incoming");
+        return null;
+      }
+    },
+    [medplum, card, activeCase],
+  );
 
   const onVoiceStarted = useCallback(async () => {
     await openIncoming();
@@ -647,7 +635,7 @@ function EmsContent() {
                 const next = applyHandoffText(card, reportText);
                 setCard(next);
                 setStatus("Applied text to active case.");
-                if (!activeCase) void openIncoming();
+                if (!activeCase) void openIncoming(next);
               }}
               className="rounded-md border border-zinc-600 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
             >
@@ -657,71 +645,28 @@ function EmsContent() {
         </div>
 
         <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900/30 p-4">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.15em] text-zinc-500">
-            Direct channel
-          </p>
-          <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto font-mono text-xs text-zinc-400">
-            {channel.length === 0 ? (
-              <li className="text-zinc-600">No messages for this case.</li>
-            ) : (
-              channel.map((m) => (
-                <li key={m.id}>
-                  <span className="text-zinc-600">
-                    [{m.type}
-                    {m.from ? ` · ${m.from}` : ""}]
-                  </span>{" "}
-                  {m.message}
-                </li>
-              ))
-            )}
-          </ul>
-          <div className="mt-2 flex flex-wrap gap-2">
-            <input
-              value={channelDraft}
-              onChange={(e) => setChannelDraft(e.target.value)}
-              placeholder="Message hospital…"
-              disabled={!activeCase}
-              className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-3 py-1.5 text-sm disabled:opacity-50"
-            />
-            <button
-              type="button"
-              disabled={busy || !activeCase || !channelDraft.trim()}
-              onClick={() => void onSendChannel()}
-              className="rounded-md border border-zinc-600 px-3 py-1.5 text-sm disabled:opacity-50"
-            >
-              Send
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void onBridge()}
-              className="rounded-md border border-sky-800/60 px-3 py-1.5 text-sm text-sky-100 disabled:opacity-50"
-            >
-              Request live connect
-            </button>
-          </div>
-          {activeCase && (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {[
-                "ETA 4 mins",
-                "IV established",
-                "Vitals stable",
-                "Patient deteriorating",
-              ].map((quick) => (
-                <button
-                  key={quick}
-                  type="button"
-                  disabled={busy}
-                  onClick={() => {
-                    setChannelDraft(quick);
-                  }}
-                  className="rounded border border-zinc-800 bg-zinc-950/60 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
-                >
-                  {quick}
-                </button>
-              ))}
-            </div>
-          )}
+          <CaseChannel
+            channel={channel}
+            emptyLabel="No messages for this case."
+            draft={channelDraft}
+            onDraftChange={setChannelDraft}
+            onSend={() => void onSendChannel()}
+            placeholder="Message hospital…"
+            busy={busy}
+            disabled={!activeCase}
+            quickPhrases={EMS_QUICK_PHRASES}
+            listClassName="max-h-32"
+            actions={
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void onBridge()}
+                className="rounded-md border border-sky-800/60 px-3 py-1.5 text-sm text-sky-100 disabled:opacity-50"
+              >
+                Request live connect
+              </button>
+            }
+          />
         </div>
 
         {banner && (
@@ -743,14 +688,16 @@ function EmsContent() {
                 key={p.id}
                 type="button"
                 onClick={() => {
-                  setCard({
+                  const next = {
                     ...p.card,
                     etaCapturedAt: new Date().toISOString(),
-                  });
+                  };
+                  setCard(next);
                   setReportText(p.reportText);
                   setStatus(`Loaded ${p.name}`);
                   setInjectMessage(null);
                   setBanner(null);
+                  if (!activeCase) void openIncoming(next);
                 }}
                 className="rounded-md bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-200 transition hover:bg-zinc-700"
               >

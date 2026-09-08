@@ -463,7 +463,7 @@ export function applyHandoffText(card: TraumaCard, text: string): TraumaCard {
   );
   if (oral?.[1]) next.lastOralIntake = oral[1].trim().slice(0, 80);
 
-  const parsedInterventions: string[] = [...(next.interventions ?? [])];
+  const found: string[] = [];
   const interventionPatterns: { label: (typeof COMMON_INTERVENTIONS)[number]; re: RegExp }[] = [
     { label: "Tourniquet", re: /\btourniquet\b|\btq\b/ },
     { label: "Pelvic Binder", re: /pelvic\s*binder|\bbinder\b/ },
@@ -475,13 +475,9 @@ export function applyHandoffText(card: TraumaCard, text: string): TraumaCard {
     { label: "Large Bore IV", re: /large\s*bore|\b(?:18|16|14)\s*g(?:auge)?\b|\bintraosseous\b|\b(?:i\.?v\.?|io)\b/ },
   ];
   for (const { label, re } of interventionPatterns) {
-    if (re.test(lower) && !parsedInterventions.includes(label)) {
-      parsedInterventions.push(label);
-    }
+    if (re.test(lower)) found.push(label);
   }
-  if (parsedInterventions.length > 0) {
-    next.interventions = parsedInterventions;
-  }
+  next.interventions = mergeInterventions(next.interventions, found);
 
   return next;
 }

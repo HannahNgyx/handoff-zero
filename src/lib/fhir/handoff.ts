@@ -1026,21 +1026,47 @@ export function cardFromCommunicationPayload(raw: string): TraumaCard | null {
   }
 }
 
-export function acceptanceMessageFromPayload(raw: string): string | null {
+export function parseAcceptancePayload(raw: string): {
+  type: "acceptance" | "decline";
+  message: string;
+  serviceRequestId?: string;
+} | null {
   try {
-    const parsed = JSON.parse(raw) as { type?: string; message?: string };
-    if (parsed.type === "acceptance" && parsed.message) return parsed.message;
-    return null;
+    const parsed = JSON.parse(raw) as {
+      type?: string;
+      message?: string;
+      serviceRequestId?: string;
+    };
+    if (parsed.type !== "acceptance" && parsed.type !== "decline") return null;
+    if (!parsed.message) return null;
+    return {
+      type: parsed.type,
+      message: parsed.message,
+      serviceRequestId: parsed.serviceRequestId,
+    };
   } catch {
     return null;
   }
 }
 
-export function infoRequestMessageFromPayload(raw: string): string | null {
+export function parseBridgePayload(raw: string): {
+  message: string;
+  from?: ChannelParty;
+  serviceRequestId?: string;
+} | null {
   try {
-    const parsed = JSON.parse(raw) as { type?: string; message?: string };
-    if (parsed.type === "info-request" && parsed.message) return parsed.message;
-    return null;
+    const parsed = JSON.parse(raw) as {
+      type?: string;
+      message?: string;
+      from?: ChannelParty;
+      serviceRequestId?: string;
+    };
+    if (parsed.type !== "bridge-request" || !parsed.message) return null;
+    return {
+      message: parsed.message,
+      from: parsed.from,
+      serviceRequestId: parsed.serviceRequestId,
+    };
   } catch {
     return null;
   }
