@@ -1,7 +1,9 @@
 "use client";
 
 import { AppChrome } from "@/components/Providers";
+import { CaseChannel, HOSPITAL_QUICK_PHRASES } from "@/components/CaseChannel";
 import { EtaCountdown } from "@/components/EtaCountdown";
+import { TraumaCardFields } from "@/components/TraumaCardFields";
 import {
   acceptHandoff,
   BRIDGE_COMM_CRITERIA,
@@ -23,12 +25,9 @@ import {
   type InfoTopicId,
 } from "@/lib/fhir/handoff";
 import {
-  calculateShockIndex,
   caseShortId,
   caseTitle,
-  formatBp,
   flagBp,
-  flagGcs,
   flagHr,
   getSuggestedAsks,
   getTraumaTriageAssessment,
@@ -36,18 +35,9 @@ import {
   sortHandoffs,
   type ActiveHandoff,
 } from "@/lib/trauma";
-import type { Bundle, Task } from "@medplum/fhirtypes";
+import type { Task } from "@medplum/fhirtypes";
 import { useMedplum, useSubscription } from "@medplum/react-hooks";
-import { useCallback, useEffect, useMemo, useState } from "react";
-
-function Flag({ value }: { value: string | null }) {
-  if (!value) return null;
-  return (
-    <span className="ml-2 text-[10px] font-bold tracking-wider text-rose-400">
-      {value}
-    </span>
-  );
-}
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 function nowStamp() {
   return new Date().toLocaleTimeString("en-US", {
@@ -157,6 +147,7 @@ const TRAUMA_BAY_CHECKLIST = [
 
 function CaseDetail({
   handoff,
+  accepted,
   busy,
   showPicker,
   channel,
@@ -173,6 +164,7 @@ function CaseDetail({
   onSendChannel,
 }: {
   handoff: ActiveHandoff;
+  accepted?: boolean;
   busy: boolean;
   showPicker: boolean;
   channel: ChannelEntry[];
@@ -195,7 +187,7 @@ function CaseDetail({
   return (
     <section
       className={`rounded-lg border bg-zinc-900/50 p-5 ${
-        handoff.handoffStatus === "confirmed"
+        accepted || handoff.handoffStatus === "confirmed"
           ? "border-teal-700/40"
           : "border-amber-700/40"
       }`}
@@ -206,16 +198,26 @@ function CaseDetail({
             <p className="font-mono text-[11px] text-zinc-500">
               Case · {caseShortId(handoff)}
             </p>
-            <StatusBadge status={handoff.handoffStatus} />
+            {accepted ? (
+              <span className="inline-block rounded bg-teal-950 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-teal-300 ring-1 ring-teal-700/50">
+                Accepted
+              </span>
+            ) : (
+              <StatusBadge status={handoff.handoffStatus} />
+            )}
           </div>
           <h2 className="mt-1 text-lg font-semibold tracking-tight text-zinc-50">
             {caseTitle(handoff)}
           </h2>
-          {handoff.handoffStatus === "incoming" && (
+          {accepted ? (
+            <p className="mt-1 text-xs text-teal-200/70">
+              Trauma Bay 2 is being prepared. Acknowledgment sent to EMS.
+            </p>
+          ) : handoff.handoffStatus === "incoming" ? (
             <p className="mt-1 text-xs text-amber-200/70">
               Live pre-arrival — not yet confirmed by EMS. Actions still available.
             </p>
-          )}
+          ) : null}
         </div>
         <EtaCountdown card={card} />
       </div>
@@ -240,98 +242,7 @@ function CaseDetail({
         </div>
       )}
 
-      <dl className="mt-4 space-y-2.5 font-mono text-sm">
-        <div className="flex justify-between gap-4">
-          <dt className="text-zinc-500">
-            Blood pressure
-            <span className="ml-1 text-[10px] text-zinc-600">(BP)</span>
-          </dt>
-          <dd>
-            {formatBp(card)}
-            <span className="ml-1 text-[10px] text-zinc-600">mmHg</span>
-            <Flag value={flagBp(card.vitals.bpSystolic)} />
-          </dd>
-        </div>
-        <div className="flex justify-between gap-4">
-          <dt className="text-zinc-500">Heart rate</dt>
-          <dd>
-            {card.vitals.heartRate ?? "—"}
-            <Flag value={flagHr(card.vitals.heartRate)} />
-          </dd>
-        </div>
-        <div className="flex justify-between gap-4">
-          <dt className="text-zinc-500">GCS</dt>
-          <dd>
-            {card.vitals.gcs ?? "—"}
-            <Flag value={flagGcs(card.vitals.gcs)} />
-          </dd>
-        </div>
-        {(() => {
-          const si = calculateShockIndex(
-            card.vitals.heartRate,
-            card.vitals.bpSystolic,
-          );
-          if (!si) return null;
-          return (
-            <div className="flex justify-between gap-4">
-              <dt className="text-zinc-500">Shock Index (HR/SBP)</dt>
-              <dd className="font-mono">
-                {si.value}
-                <span
-                  className={`ml-2 text-[10px] font-bold tracking-wider ${
-                    si.flag === "CRITICAL"
-                      ? "text-rose-400"
-                      : si.flag === "ELEVATED"
-                        ? "text-amber-400"
-                        : "text-emerald-400"
-                  }`}
-                >
-                  {si.flag}
-                </span>
-              </dd>
-            </div>
-          );
-        })()}
-        <div className="flex justify-between gap-4">
-          <dt className="text-zinc-500">Injury</dt>
-          <dd className="text-right">{card.injury ?? "—"}</dd>
-        </div>
-        <div className="flex justify-between gap-4">
-          <dt className="text-zinc-500">Allergy</dt>
-          <dd className="font-semibold uppercase text-rose-300">
-            {card.allergy ?? "—"}
-          </dd>
-        </div>
-        <div className="flex justify-between gap-4">
-          <dt className="text-zinc-500">Blood type</dt>
-          <dd className="font-semibold uppercase text-teal-200">
-            {card.bloodType ?? "—"}
-          </dd>
-        </div>
-        <div className="flex justify-between gap-4">
-          <dt className="text-zinc-500">Last oral intake</dt>
-          <dd className="text-right">{card.lastOralIntake ?? "—"}</dd>
-        </div>
-        <div className="flex justify-between gap-4">
-          <dt className="text-zinc-500">Emergency contact</dt>
-          <dd className="text-right">{card.emergencyContact ?? "—"}</dd>
-        </div>
-        {card.interventions && card.interventions.length > 0 && (
-          <div className="flex items-start justify-between gap-4 pt-1">
-            <dt className="text-zinc-500">Interventions</dt>
-            <dd className="flex flex-wrap justify-end gap-1.5 text-right">
-              {card.interventions.map((intv) => (
-                <span
-                  key={intv}
-                  className="inline-block rounded bg-emerald-950/80 px-2 py-0.5 text-[11px] font-semibold text-emerald-300 ring-1 ring-emerald-600/50"
-                >
-                  {intv}
-                </span>
-              ))}
-            </dd>
-          </div>
-        )}
-      </dl>
+      <TraumaCardFields card={card} />
 
       <div className="mt-6 border-t border-zinc-800 pt-4">
         <div className="flex items-center justify-between gap-2">
@@ -373,14 +284,16 @@ function CaseDetail({
       </div>
 
       <div className="mt-6 flex flex-wrap gap-2">
-        <button
-          type="button"
-          disabled={busy}
-          onClick={onAccept}
-          className="rounded-md bg-teal-700 px-3 py-2 text-sm font-medium text-white hover:bg-teal-600 disabled:opacity-50"
-        >
-          {busy ? "Working…" : "Accept Patient"}
-        </button>
+        {!accepted && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onAccept}
+            className="rounded-md bg-teal-700 px-3 py-2 text-sm font-medium text-white hover:bg-teal-600 disabled:opacity-50"
+          >
+            {busy ? "Working…" : "Accept Patient"}
+          </button>
+        )}
         <button
           type="button"
           disabled={busy || showPicker}
@@ -397,14 +310,16 @@ function CaseDetail({
         >
           Request live connect
         </button>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={onDecline}
-          className="rounded-md border border-rose-900/60 px-3 py-2 text-sm text-rose-200 hover:bg-rose-950/40 disabled:opacity-50"
-        >
-          Cannot Accept
-        </button>
+        {!accepted && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onDecline}
+            className="rounded-md border border-rose-900/60 px-3 py-2 text-sm text-rose-200 hover:bg-rose-950/40 disabled:opacity-50"
+          >
+            Cannot Accept
+          </button>
+        )}
       </div>
 
       {showPicker && (
@@ -437,61 +352,17 @@ function CaseDetail({
       </div>
 
       <div className="mt-6 border-t border-zinc-800 pt-4">
-        <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-          Direct channel
-        </p>
-        <p className="mt-1 text-[11px] text-zinc-600">
-          Medplum Communications for this case (demo bridge — not WebRTC)
-        </p>
-        <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto font-mono text-xs text-zinc-400">
-          {channel.length === 0 ? (
-            <li className="text-zinc-600">No messages yet.</li>
-          ) : (
-            channel.map((m) => (
-              <li key={m.id}>
-                <span className="text-zinc-600">
-                  [{m.type}
-                  {m.from ? ` · ${m.from}` : ""}]
-                </span>{" "}
-                {m.message}
-              </li>
-            ))
-          )}
-        </ul>
-        <div className="mt-2 flex gap-2">
-          <input
-            value={channelDraft}
-            onChange={(e) => onChannelDraft(e.target.value)}
-            placeholder="Message EMS…"
-            className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-950 px-3 py-1.5 text-sm"
-          />
-          <button
-            type="button"
-            disabled={busy || !channelDraft.trim()}
-            onClick={onSendChannel}
-            className="rounded-md border border-zinc-600 px-3 py-1.5 text-sm text-zinc-200 disabled:opacity-50"
-          >
-            Send
-          </button>
-        </div>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {[
-            "Trauma Bay 2 Ready",
-            "Trauma Team Activated",
-            "Airway Team Standby",
-            "Direct to CT on arrival",
-          ].map((quick) => (
-            <button
-              key={quick}
-              type="button"
-              disabled={busy}
-              onClick={() => onChannelDraft(quick)}
-              className="rounded border border-zinc-800 bg-zinc-950/60 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
-            >
-              {quick}
-            </button>
-          ))}
-        </div>
+        <CaseChannel
+          channel={channel}
+          emptyLabel="No messages yet."
+          caption="Medplum Communications for this case (demo bridge — not WebRTC)"
+          draft={channelDraft}
+          onDraftChange={onChannelDraft}
+          onSend={onSendChannel}
+          placeholder="Message EMS…"
+          busy={busy}
+          quickPhrases={HOSPITAL_QUICK_PHRASES}
+        />
       </div>
     </section>
   );
@@ -516,12 +387,16 @@ function HospitalContent() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [events, setEvents] = useState<string[]>([]);
-  const [seenIds, setSeenIds] = useState<Set<string>>(new Set());
-  const [seenConfirmed, setSeenConfirmed] = useState<Set<string>>(new Set());
   const [dirtyIds, setDirtyIds] = useState<Set<string>>(new Set());
   const [showPicker, setShowPicker] = useState(false);
   const [queueFilter, setQueueFilter] = useState<"all" | "incoming" | "confirmed">("all");
   const [readinessByCase, setReadinessByCase] = useState<Record<string, Set<string>>>({});
+  const seenIdsRef = useRef(new Set<string>());
+  const seenConfirmedRef = useRef(new Set<string>());
+  const selectedIdRef = useRef(selectedId);
+  const acceptedRef = useRef(accepted);
+  const handoffsRef = useRef(handoffs);
+  const focusEncounterRef = useRef<string | undefined>(undefined);
 
   const sorted = useMemo(() => sortHandoffs(handoffs), [handoffs]);
   const filteredQueue = useMemo(() => {
@@ -534,6 +409,19 @@ function HospitalContent() {
     (accepted?.id === selectedId ? accepted : null) ??
     sorted[0] ??
     accepted;
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
+  useEffect(() => {
+    acceptedRef.current = accepted;
+  }, [accepted]);
+  useEffect(() => {
+    handoffsRef.current = handoffs;
+  }, [handoffs]);
+  useEffect(() => {
+    focusEncounterRef.current = selected?.encounterId;
+  }, [selected?.encounterId]);
 
   const pushEvent = useCallback((line: string) => {
     setEvents((e) => [`${nowStamp()}  ${line}`, ...e].slice(0, 40));
@@ -557,75 +445,72 @@ function HospitalContent() {
   const refresh = useCallback(async () => {
     try {
       const list = await loadActiveHandoffs(medplum);
+      const selectedIdNow = selectedIdRef.current;
+      const acceptedNow = acceptedRef.current;
+      const prev = handoffsRef.current;
       setHandoffs(list);
       setError(null);
 
-      setSeenIds((prev) => {
-        const next = new Set(prev);
+      for (const h of list) {
+        if (!seenIdsRef.current.has(h.id)) {
+          seenIdsRef.current.add(h.id);
+          const t = nowStamp();
+          const id = caseShortId(h);
+          setEvents((e) =>
+            [
+              `${t}  [${id}] Handoff started (incoming)`,
+              `${t}  [${id}] Encounter created`,
+              ...e,
+            ].slice(0, 40),
+          );
+        }
+        if (h.handoffStatus === "confirmed" && !seenConfirmedRef.current.has(h.id)) {
+          seenConfirmedRef.current.add(h.id);
+          const t = nowStamp();
+          setEvents((e) =>
+            [`${t}  [${caseShortId(h)}] Handoff confirmed by EMS`, ...e].slice(0, 40),
+          );
+        }
+      }
+
+      setDirtyIds((dirty) => {
+        let changed = false;
+        const next = new Set(dirty);
         for (const h of list) {
-          if (!next.has(h.id)) {
+          if (h.id === selectedIdNow) continue;
+          const old = prev.find((p) => p.id === h.id);
+          if (old && old.transmittedAt !== h.transmittedAt && !next.has(h.id)) {
             next.add(h.id);
-            const t = nowStamp();
-            const id = caseShortId(h);
-            setEvents((e) =>
-              [
-                `${t}  [${id}] Handoff started (incoming)`,
-                `${t}  [${id}] Encounter created`,
-                ...e,
-              ].slice(0, 40),
-            );
+            changed = true;
           }
         }
-        return next;
+        return changed ? next : dirty;
       });
 
-      setSeenConfirmed((prev) => {
-        const next = new Set(prev);
-        for (const h of list) {
-          if (h.handoffStatus === "confirmed" && !next.has(h.id)) {
-            next.add(h.id);
-            const t = nowStamp();
-            const id = caseShortId(h);
-            setEvents((e) =>
-              [`${t}  [${id}] Handoff confirmed by EMS`, ...e].slice(0, 40),
-            );
-          }
-        }
-        return next;
-      });
-
-      setDirtyIds((prev) => {
-        const next = new Set(prev);
-        for (const h of list) {
-          if (h.id !== selectedId) next.add(h.id);
-        }
-        return next;
-      });
-
-      if (!selectedId && list[0]) setSelectedId(list[0].id);
+      if (!selectedIdNow && list[0]) setSelectedId(list[0].id);
 
       const focus =
-        list.find((h) => h.id === selectedId) ??
-        (accepted?.id === selectedId ? accepted : null);
+        list.find((h) => h.id === selectedIdNow) ??
+        (acceptedNow?.id === selectedIdNow ? acceptedNow : null);
       if (focus?.encounterId) {
         await refreshChannel(focus.encounterId);
-        if (accepted?.id === focus.id) {
+        if (acceptedNow?.id === focus.id) {
           const prep = await loadPrepTasks(medplum, focus.encounterId);
           setTasks(prep);
           const oral = await loadOralIntake(medplum, focus.encounterId);
-          if (oral && accepted.card.lastOralIntake !== oral) {
+          if (oral && acceptedNow.card.lastOralIntake !== oral) {
             setAccepted({
-              ...accepted,
-              card: { ...accepted.card, lastOralIntake: oral },
+              ...acceptedNow,
+              card: { ...acceptedNow.card, lastOralIntake: oral },
             });
-            pushEvent(`[${caseShortId(accepted)}] Oral intake: ${oral}`);
+            pushEvent(`[${caseShortId(acceptedNow)}] Oral intake: ${oral}`);
           }
         }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load handoffs");
     }
-  }, [medplum, selectedId, accepted, pushEvent, refreshChannel]);
+  }, [medplum, pushEvent, refreshChannel]);
 
   useEffect(() => {
     void refresh();
@@ -642,6 +527,10 @@ function HospitalContent() {
     }
   }, [selectedId]);
 
+  useEffect(() => {
+    void refreshChannel(selected?.encounterId);
+  }, [selected?.encounterId, refreshChannel]);
+
   useSubscription(HANDOFF_SR_CRITERIA, () => {
     void refresh();
   });
@@ -649,16 +538,23 @@ function HospitalContent() {
     void refresh();
   });
   useSubscription(BRIDGE_COMM_CRITERIA, () => {
-    void refresh();
+    void refreshChannel(focusEncounterRef.current);
   });
   useSubscription(CHANNEL_COMM_CRITERIA, () => {
-    void refresh();
+    void refreshChannel(focusEncounterRef.current);
   });
   useSubscription(INFO_REQUEST_COMM_CRITERIA, () => {
-    void refresh();
+    void refreshChannel(focusEncounterRef.current);
   });
   useSubscription(`Task?_tag=https://traumatink.app/fhir/tag|prearrival-handoff`, () => {
-    void refresh();
+    const encounterId = focusEncounterRef.current;
+    const acceptedNow = acceptedRef.current;
+    if (!encounterId || !acceptedNow) return;
+    void loadPrepTasks(medplum, encounterId)
+      .then(setTasks)
+      .catch(() => {
+        /* ignore */
+      });
   });
   useSubscription(ORAL_INTAKE_OBS_CRITERIA, () => {
     void refresh();
@@ -874,62 +770,10 @@ function HospitalContent() {
               Listening for EMS Incoming drafts and Confirm…
             </p>
           </section>
-        ) : showingAccepted ? (
-          <section className="rounded-lg border border-teal-800/50 bg-zinc-900/40 p-5">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-teal-400">
-              Transfer accepted · Case · {caseShortId(accepted)}
-            </p>
-            <h2 className="mt-1 text-lg font-semibold text-zinc-50">
-              {patientLine(accepted.card)}
-            </h2>
-            <p className="mt-2 text-sm text-zinc-400">
-              Trauma Bay 2 is being prepared. Acknowledgment sent to EMS.
-            </p>
-            <dl className="mt-4 space-y-2 font-mono text-sm">
-              <div className="flex justify-between gap-4">
-                <dt className="text-zinc-500">Blood type</dt>
-                <dd className="uppercase text-teal-200">
-                  {accepted.card.bloodType ?? "—"}
-                </dd>
-              </div>
-              <div className="flex justify-between gap-4">
-                <dt className="text-zinc-500">Last oral intake</dt>
-                <dd>{accepted.card.lastOralIntake ?? "—"}</dd>
-              </div>
-            </dl>
-            <div className="mt-5 flex flex-wrap gap-2">
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => setShowPicker(true)}
-                className="rounded-md border border-amber-700/60 px-3 py-2 text-sm text-amber-100"
-              >
-                Request More Info
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void onBridge(accepted)}
-                className="rounded-md border border-sky-800/60 px-3 py-2 text-sm text-sky-100"
-              >
-                Request live connect
-              </button>
-            </div>
-            {showPicker && (
-              <div className="mt-4">
-                <InfoRequestPicker
-                  busy={busy}
-                  onSubmit={(topics, note) =>
-                    void onSubmitInfo(accepted, topics, note)
-                  }
-                  onCancel={() => setShowPicker(false)}
-                />
-              </div>
-            )}
-          </section>
         ) : (
           <CaseDetail
             handoff={selected}
+            accepted={Boolean(showingAccepted)}
             busy={busy}
             showPicker={showPicker}
             channel={channel}

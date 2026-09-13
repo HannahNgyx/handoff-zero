@@ -2,6 +2,7 @@
 
 import {
   getMissingFields,
+  mergeInterventions,
   type TraumaCard,
 } from "@/lib/trauma";
 import type { AgentSessionConfig, FunctionCallItem } from "@deepgram/agents";
@@ -87,7 +88,9 @@ export function applyTraumaArgs(card: TraumaCard, raw: TraumaArgs): TraumaCard {
       : card.bloodType,
     lastOralIntake: raw.lastOralIntake ?? card.lastOralIntake,
     emergencyContact: raw.emergencyContact ?? card.emergencyContact,
-    interventions: raw.interventions ?? card.interventions,
+    interventions: raw.interventions
+      ? mergeInterventions(card.interventions, raw.interventions)
+      : card.interventions,
     etaMinutes: raw.etaMinutes ?? card.etaMinutes,
     etaCapturedAt: card.etaCapturedAt ?? new Date().toISOString(),
   };

@@ -123,6 +123,14 @@ function parseLocationId(location: string | undefined, resourceType: string): st
   return location.split("/")[1]?.split("/_")[0];
 }
 
+/** First Communication in a Medplum subscription Bundle, if any. */
+export function communicationFromBundle(bundle: Bundle): Communication | undefined {
+  const entry = bundle.entry?.find((e) => e.resource?.resourceType === "Communication");
+  return entry?.resource?.resourceType === "Communication"
+    ? entry.resource
+    : undefined;
+}
+
 export function handoffFromBatchResult(
   card: TraumaCard,
   result: Bundle,
@@ -178,6 +186,11 @@ function summaryFromCard(card: TraumaCard): string {
     .join(". ");
 }
 
+function encounterKey(ref: string | undefined): string | undefined {
+  if (!ref) return undefined;
+  return ref.replace(/^Encounter\//, "") || undefined;
+}
+
 export async function loadActiveHandoffs(medplum: MedplumClient): Promise<ActiveHandoff[]> {
   const requests = await medplum.searchResources("ServiceRequest", {
     status: "draft,active",
@@ -186,53 +199,58 @@ export async function loadActiveHandoffs(medplum: MedplumClient): Promise<Active
     _count: "25",
   });
 
-  const handoffs: ActiveHandoff[] = [];
+  const [comms, orals] = await Promise.all([
+    medplum.searchResources("Communication", {
+      _tag: `${TAG_SYSTEM}|${TAG_HANDOFF}`,
+      _sort: "-_lastUpdated",
+      _count: "50",
+    }),
+    medplum.searchResources("Observation", {
+      _tag: `${TAG_SYSTEM}|${TAG_ORAL_INTAKE}`,
+      _sort: "-_lastUpdated",
+      _count: "50",
+    }),
+  ]);
 
-  for (const sr of requests) {
-    const encounterRef = sr.encounter?.reference;
-    let card: TraumaCard | null = null;
-    let communicationId: string | undefined;
+  const cardByEncounter = new Map<
+    string,
+    { card: TraumaCard; communicationId?: string }
+  >();
+  for (const c of comms) {
+    const key = encounterKey(c.encounter?.reference);
+    if (!key || cardByEncounter.has(key)) continue;
+    const payload = c.payload?.[0]?.contentString;
+    if (!payload) continue;
+    const parsed = cardFromCommunicationPayload(payload);
+    if (parsed) cardByEncounter.set(key, { card: parsed, communicationId: c.id });
+  }
 
-    if (encounterRef) {
-      const comms = await medplum.searchResources("Communication", {
-        encounter: encounterRef,
-        _tag: `${TAG_SYSTEM}|${TAG_HANDOFF}`,
-        _count: "5",
-      });
-      for (const c of comms) {
-        const payload = c.payload?.[0]?.contentString;
-        if (!payload) continue;
-        card = cardFromCommunicationPayload(payload);
-        if (card) {
-          communicationId = c.id;
-          break;
-        }
-      }
-    }
+  const oralByEncounter = new Map<string, string>();
+  for (const obs of orals) {
+    const key = encounterKey(obs.encounter?.reference);
+    if (!key || oralByEncounter.has(key) || !obs.valueString) continue;
+    oralByEncounter.set(key, obs.valueString);
+  }
 
-    // Allow empty draft shells so hospital sees Incoming at call start.
-    if (!card) {
-      card = { ...EMPTY_TRAUMA_CARD };
-    }
-
-    const encounterId = encounterRef?.replace("Encounter/", "");
-    const oral = await loadOralIntake(medplum, encounterId);
+  return requests.map((sr) => {
+    const encounterId = encounterKey(sr.encounter?.reference);
+    const packed = encounterId ? cardByEncounter.get(encounterId) : undefined;
+    let card = packed?.card ?? { ...EMPTY_TRAUMA_CARD };
+    const oral = encounterId ? oralByEncounter.get(encounterId) : undefined;
     if (oral) card = { ...card, lastOralIntake: oral };
 
-    handoffs.push({
+    return {
       id: sr.id ?? crypto.randomUUID(),
       card,
       transmittedAt: sr.meta?.lastUpdated ?? sr.authoredOn ?? new Date().toISOString(),
-      mode: "medplum",
-      handoffStatus: sr.status === "active" ? "confirmed" : "incoming",
+      mode: "medplum" as const,
+      handoffStatus: (sr.status === "active" ? "confirmed" : "incoming") as ActiveHandoff["handoffStatus"],
       serviceRequestId: sr.id,
       encounterId,
       patientId: sr.subject?.reference?.replace("Patient/", ""),
-      communicationId,
-    });
-  }
-
-  return handoffs;
+      communicationId: packed?.communicationId,
+    };
+  });
 }
 
 /** Call start: create Patient/Encounter/Communication + draft ServiceRequest. */
@@ -471,14 +489,18 @@ export async function loadCaseChannel(
     `${TAG_SYSTEM}|${TAG_INFO_REQUEST}`,
   ];
   const entries: ChannelEntry[] = [];
+  const commGroups = await Promise.all(
+    tags.map((tag) =>
+      medplum.searchResources("Communication", {
+        encounter: `Encounter/${encounterId}`,
+        _tag: tag,
+        _sort: "-_lastUpdated",
+        _count: "20",
+      }),
+    ),
+  );
 
-  for (const tag of tags) {
-    const comms = await medplum.searchResources("Communication", {
-      encounter: `Encounter/${encounterId}`,
-      _tag: tag,
-      _sort: "-_lastUpdated",
-      _count: "20",
-    });
+  for (const comms of commGroups) {
     for (const c of comms) {
       const raw = c.payload?.[0]?.contentString;
       if (!raw) continue;
@@ -1004,21 +1026,47 @@ export function cardFromCommunicationPayload(raw: string): TraumaCard | null {
   }
 }
 
-export function acceptanceMessageFromPayload(raw: string): string | null {
+export function parseAcceptancePayload(raw: string): {
+  type: "acceptance" | "decline";
+  message: string;
+  serviceRequestId?: string;
+} | null {
   try {
-    const parsed = JSON.parse(raw) as { type?: string; message?: string };
-    if (parsed.type === "acceptance" && parsed.message) return parsed.message;
-    return null;
+    const parsed = JSON.parse(raw) as {
+      type?: string;
+      message?: string;
+      serviceRequestId?: string;
+    };
+    if (parsed.type !== "acceptance" && parsed.type !== "decline") return null;
+    if (!parsed.message) return null;
+    return {
+      type: parsed.type,
+      message: parsed.message,
+      serviceRequestId: parsed.serviceRequestId,
+    };
   } catch {
     return null;
   }
 }
 
-export function infoRequestMessageFromPayload(raw: string): string | null {
+export function parseBridgePayload(raw: string): {
+  message: string;
+  from?: ChannelParty;
+  serviceRequestId?: string;
+} | null {
   try {
-    const parsed = JSON.parse(raw) as { type?: string; message?: string };
-    if (parsed.type === "info-request" && parsed.message) return parsed.message;
-    return null;
+    const parsed = JSON.parse(raw) as {
+      type?: string;
+      message?: string;
+      from?: ChannelParty;
+      serviceRequestId?: string;
+    };
+    if (parsed.type !== "bridge-request" || !parsed.message) return null;
+    return {
+      message: parsed.message,
+      from: parsed.from,
+      serviceRequestId: parsed.serviceRequestId,
+    };
   } catch {
     return null;
   }
