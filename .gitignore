@@ -44,3 +44,4 @@ next-env.d.ts
 # editor / accidental local artifacts
 .cursor/
 handoff-zero@0.1.0
+/next

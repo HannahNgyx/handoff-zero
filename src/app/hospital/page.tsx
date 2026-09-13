@@ -15,7 +15,7 @@ import {
   INFO_TOPICS,
   loadActiveHandoffs,
   loadCaseChannel,
-  loadOralIntake,
+  loadEncounterCard,
   loadPrepTasks,
   ORAL_INTAKE_OBS_CRITERIA,
   postChannelMessage,
@@ -492,19 +492,36 @@ function HospitalContent() {
       const focus =
         list.find((h) => h.id === selectedIdNow) ??
         (acceptedNow?.id === selectedIdNow ? acceptedNow : null);
+
+      if (acceptedNow?.encounterId) {
+        const packed = await loadEncounterCard(medplum, acceptedNow.encounterId);
+        if (packed) {
+          const oralChanged =
+            Boolean(packed.card.lastOralIntake) &&
+            packed.card.lastOralIntake !== acceptedNow.card.lastOralIntake;
+          setAccepted((prev) => {
+            if (!prev || prev.id !== acceptedNow.id) return prev;
+            if (JSON.stringify(prev.card) === JSON.stringify(packed.card)) {
+              return prev;
+            }
+            return {
+              ...prev,
+              card: packed.card,
+              communicationId: packed.communicationId ?? prev.communicationId,
+            };
+          });
+          if (oralChanged) {
+            pushEvent(
+              `[${caseShortId(acceptedNow)}] Oral intake: ${packed.card.lastOralIntake}`,
+            );
+          }
+        }
+      }
+
       if (focus?.encounterId) {
         await refreshChannel(focus.encounterId);
         if (acceptedNow?.id === focus.id) {
-          const prep = await loadPrepTasks(medplum, focus.encounterId);
-          setTasks(prep);
-          const oral = await loadOralIntake(medplum, focus.encounterId);
-          if (oral && acceptedNow.card.lastOralIntake !== oral) {
-            setAccepted({
-              ...acceptedNow,
-              card: { ...acceptedNow.card, lastOralIntake: oral },
-            });
-            pushEvent(`[${caseShortId(acceptedNow)}] Oral intake: ${oral}`);
-          }
+          setTasks(await loadPrepTasks(medplum, focus.encounterId));
         }
       }
     } catch (err) {
