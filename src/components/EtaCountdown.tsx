@@ -7,21 +7,32 @@ import {
 } from "@/lib/trauma";
 import { useEffect, useState } from "react";
 
+/** Shared 1s clock so list rows do not each start their own interval. */
+export function useNow(active = true, intervalMs = 1000): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [active, intervalMs]);
+  return now;
+}
+
 /** Ticking ETA from etaCapturedAt + etaMinutes (MM:SS). */
 export function EtaCountdown({
   card,
   compact = false,
+  now: nowProp,
 }: {
   card: TraumaCard;
   compact?: boolean;
+  /** Pass a shared clock from the parent list; omit to tick locally. */
+  now?: number;
 }) {
-  const [now, setNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    if (card.etaMinutes == null || !card.etaCapturedAt) return;
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [card.etaMinutes, card.etaCapturedAt]);
+  const needsOwnTick =
+    nowProp == null && card.etaMinutes != null && Boolean(card.etaCapturedAt);
+  const localNow = useNow(needsOwnTick);
+  const now = nowProp ?? localNow;
 
   const size = compact ? "text-[10px]" : "text-sm";
 
