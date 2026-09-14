@@ -98,10 +98,6 @@ export type ChannelEntry = {
   createdAt: string;
 };
 
-/** @deprecated use INFO_TOPICS — kept for older callers */
-export const INFO_REQUEST_ORAL_INTAKE_MESSAGE =
-  INFO_TOPICS.find((t) => t.id === "last-oral-intake")!.message;
-
 export const PREP_TASKS = [
   { description: "Prepare trauma bay", assignee: "Charge nurse" },
   { description: "Create temporary incoming encounter", assignee: "Registration" },
@@ -345,6 +341,28 @@ export async function loadOralIntake(
     _count: "1",
   });
   return obs[0]?.valueString ?? null;
+}
+
+/** Latest trauma card for an encounter — works after Accept completes the ServiceRequest. */
+export async function loadEncounterCard(
+  medplum: MedplumClient,
+  encounterId: string | undefined,
+): Promise<{ card: TraumaCard; communicationId?: string } | null> {
+  if (!encounterId) return null;
+  const comms = await medplum.searchResources("Communication", {
+    encounter: `Encounter/${encounterId}`,
+    _tag: `${TAG_SYSTEM}|${TAG_HANDOFF}`,
+    _sort: "-_lastUpdated",
+    _count: "1",
+  });
+  const payload = comms[0]?.payload?.[0]?.contentString;
+  if (!payload) return null;
+  const parsed = cardFromCommunicationPayload(payload);
+  if (!parsed) return null;
+  let card = parsed;
+  const oral = await loadOralIntake(medplum, encounterId);
+  if (oral) card = { ...card, lastOralIntake: oral };
+  return { card, communicationId: comms[0]?.id };
 }
 
 function partyRefs(handoff: ActiveHandoff) {

@@ -2,7 +2,7 @@
 
 import { AppChrome } from "@/components/Providers";
 import { CaseChannel, HOSPITAL_QUICK_PHRASES } from "@/components/CaseChannel";
-import { EtaCountdown } from "@/components/EtaCountdown";
+import { EtaCountdown, useNow } from "@/components/EtaCountdown";
 import { TraumaCardFields } from "@/components/TraumaCardFields";
 import {
   acceptHandoff,
@@ -15,7 +15,7 @@ import {
   INFO_TOPICS,
   loadActiveHandoffs,
   loadCaseChannel,
-  loadOralIntake,
+  loadEncounterCard,
   loadPrepTasks,
   ORAL_INTAKE_OBS_CRITERIA,
   postChannelMessage,
@@ -162,6 +162,7 @@ function CaseDetail({
   onBridge,
   onDecline,
   onSendChannel,
+  now,
 }: {
   handoff: ActiveHandoff;
   accepted?: boolean;
@@ -179,6 +180,7 @@ function CaseDetail({
   onBridge: () => void;
   onDecline: () => void;
   onSendChannel: () => void;
+  now: number;
 }) {
   const { card } = handoff;
   const suggestions = getSuggestedAsks(card);
@@ -219,7 +221,7 @@ function CaseDetail({
             </p>
           ) : null}
         </div>
-        <EtaCountdown card={card} />
+        <EtaCountdown card={card} now={now} />
       </div>
 
       {triage.level !== "ROUTINE" && (
@@ -398,7 +400,8 @@ function HospitalContent() {
   const handoffsRef = useRef(handoffs);
   const focusEncounterRef = useRef<string | undefined>(undefined);
 
-  const sorted = useMemo(() => sortHandoffs(handoffs), [handoffs]);
+  const now = useNow(true);
+  const sorted = useMemo(() => sortHandoffs(handoffs, now), [handoffs, now]);
   const filteredQueue = useMemo(() => {
     if (queueFilter === "all") return sorted;
     return sorted.filter((h) => h.handoffStatus === queueFilter);
@@ -492,19 +495,36 @@ function HospitalContent() {
       const focus =
         list.find((h) => h.id === selectedIdNow) ??
         (acceptedNow?.id === selectedIdNow ? acceptedNow : null);
+
+      if (acceptedNow?.encounterId) {
+        const packed = await loadEncounterCard(medplum, acceptedNow.encounterId);
+        if (packed) {
+          const oralChanged =
+            Boolean(packed.card.lastOralIntake) &&
+            packed.card.lastOralIntake !== acceptedNow.card.lastOralIntake;
+          setAccepted((prev) => {
+            if (!prev || prev.id !== acceptedNow.id) return prev;
+            if (JSON.stringify(prev.card) === JSON.stringify(packed.card)) {
+              return prev;
+            }
+            return {
+              ...prev,
+              card: packed.card,
+              communicationId: packed.communicationId ?? prev.communicationId,
+            };
+          });
+          if (oralChanged) {
+            pushEvent(
+              `[${caseShortId(acceptedNow)}] Oral intake: ${packed.card.lastOralIntake}`,
+            );
+          }
+        }
+      }
+
       if (focus?.encounterId) {
         await refreshChannel(focus.encounterId);
         if (acceptedNow?.id === focus.id) {
-          const prep = await loadPrepTasks(medplum, focus.encounterId);
-          setTasks(prep);
-          const oral = await loadOralIntake(medplum, focus.encounterId);
-          if (oral && acceptedNow.card.lastOralIntake !== oral) {
-            setAccepted({
-              ...acceptedNow,
-              card: { ...acceptedNow.card, lastOralIntake: oral },
-            });
-            pushEvent(`[${caseShortId(acceptedNow)}] Oral intake: ${oral}`);
-          }
+          setTasks(await loadPrepTasks(medplum, focus.encounterId));
         }
       }
     } catch (err) {
@@ -730,7 +750,7 @@ function HospitalContent() {
                     </div>
                     <p className="mt-1 truncate text-zinc-200">{caseTitle(h)}</p>
                     <p className="mt-0.5 font-mono text-[10px] text-zinc-500">
-                      <EtaCountdown card={h.card} compact />
+                      <EtaCountdown card={h.card} compact now={now} />
                       {bp ? ` · BP ${bp}` : ""}
                       {hr ? ` · HR ${hr}` : ""}
                     </p>
@@ -790,6 +810,7 @@ function HospitalContent() {
             onBridge={() => void onBridge(selected)}
             onDecline={() => void onDecline(selected)}
             onSendChannel={() => void onSendChannel(selected)}
+            now={now}
           />
         )}
 

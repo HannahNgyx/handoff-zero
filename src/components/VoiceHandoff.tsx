@@ -383,9 +383,14 @@ export function VoiceHandoff({
   onVoiceStarted?: () => void | Promise<void>;
 }) {
   const cardRef = useRef(card);
-  cardRef.current = card;
   const onCardChangeRef = useRef(onCardChange);
-  onCardChangeRef.current = onCardChange;
+
+  useEffect(() => {
+    cardRef.current = card;
+  }, [card]);
+  useEffect(() => {
+    onCardChangeRef.current = onCardChange;
+  }, [onCardChange]);
 
   const config = useMemo(() => buildAgentConfig(), []);
 

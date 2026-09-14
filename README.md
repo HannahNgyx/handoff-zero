@@ -139,8 +139,7 @@ handoff-zero/
     │   ├── ems/page.tsx        # EMS multi-case UI + voice/text/confirm
     │   ├── hospital/page.tsx   # Hospital queue + case detail + actions
     │   └── api/
-    │       ├── deepgram/token/route.ts   # Short-lived Deepgram JWT (keeps API key server-side)
-    │       └── handoff/route.ts          # Legacy stub (writes happen in browser Medplum client)
+    │       └── deepgram/token/route.ts   # Short-lived Deepgram JWT (keeps API key server-side)
     ├── components/
     │   ├── Providers.tsx       # Medplum provider, login, AuthGate, WS status badge, chrome
     │   ├── CaseChannel.tsx     # Shared EMS/hospital direct-channel thread
