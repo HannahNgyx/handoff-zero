@@ -374,6 +374,38 @@ export function sortHandoffs(
  * Lightweight text fallback when voice/mic fails — extracts common handoff phrases.
  * Prefer Deepgram function calling when the agent is connected.
  */
+const ETA_WORDS: Record<string, number> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+  thirteen: 13,
+  fourteen: 14,
+  fifteen: 15,
+  twenty: 20,
+};
+
+function parseEtaMinutes(lower: string): number | null {
+  const numeric = lower.match(/eta\s*(?:is\s*)?(\d{1,2})\s*(?:min|minutes)?/);
+  if (numeric) return Number(numeric[1]);
+  const words = Object.keys(ETA_WORDS)
+    .sort((a, b) => b.length - a.length)
+    .join("|");
+  const spoken = lower.match(
+    new RegExp(`eta\\s*(?:is\\s*)?(${words})\\s*(?:min|minutes)?`),
+  );
+  if (spoken) return ETA_WORDS[spoken[1]] ?? null;
+  return null;
+}
+
 export function applyHandoffText(card: TraumaCard, text: string): TraumaCard {
   const t = text.trim();
   if (!t) return card;
@@ -436,8 +468,30 @@ export function applyHandoffText(card: TraumaCard, text: string): TraumaCard {
   }
 
   if (/penicillin/.test(lower)) next.allergy = "PENICILLIN";
+  else if (/sulfa/.test(lower)) next.allergy = "Sulfa drugs";
+  else if (/\bnkda\b|no known (drug )?allerg/.test(lower)) {
+    next.allergy = "No known drug allergies";
+  }
+
   if (/no known anticoagulants|not on anticoagulants|no anticoagulants/.test(lower)) {
     next.anticoagulants = "None reported";
+  } else {
+    const ac = lower.match(
+      /\b(warfarin|coumadin|eliquis|apixaban|xarelto|rivaroxaban|pradaxa|dabigatran)\b/,
+    );
+    if (ac) {
+      const named: Record<string, string> = {
+        warfarin: "Warfarin",
+        coumadin: "Warfarin",
+        eliquis: "Eliquis",
+        apixaban: "Eliquis",
+        xarelto: "Xarelto",
+        rivaroxaban: "Xarelto",
+        pradaxa: "Pradaxa",
+        dabigatran: "Dabigatran",
+      };
+      next.anticoagulants = named[ac[1]] ?? ac[1];
+    }
   }
 
   const blood = lower.match(
@@ -455,8 +509,8 @@ export function applyHandoffText(card: TraumaCard, text: string): TraumaCard {
     next.bloodType = `${abo}${rh}` || abo;
   }
 
-  const eta = lower.match(/eta\s*(?:is\s*)?(\d{1,2})\s*(?:min|minutes)?/);
-  if (eta) next.etaMinutes = Number(eta[1]);
+  const etaMinutes = parseEtaMinutes(lower);
+  if (etaMinutes != null) next.etaMinutes = etaMinutes;
 
   const oral = lower.match(
     /(?:last\s*(?:ate|drank|oral\s*intake)|ate|drank)\s*(?:around\s*|at\s*)?(.+?)(?:\.|$)/,
