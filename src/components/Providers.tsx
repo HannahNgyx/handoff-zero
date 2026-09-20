@@ -267,52 +267,50 @@ export function AppChrome({
   children: ReactNode;
 }) {
   return (
-    <TraumaLinkProviders>
-      <div className="min-h-screen bg-[#0c1117] text-zinc-100">
-        <header className="border-b border-zinc-800/80 px-6 py-4">
-          <div className="mx-auto flex max-w-6xl items-center justify-between gap-4">
-            <div className="flex min-w-0 items-center gap-6">
-              <div>
-                <Link
-                  href="/"
-                  className="text-[11px] font-semibold uppercase tracking-[0.2em] text-teal-400/90 hover:text-teal-300"
-                >
-                  TraumaLink
-                </Link>
-                <h1 className="mt-0.5 text-lg font-semibold tracking-tight text-zinc-50">
-                  {role === "EMS" ? "EMS handoff" : "Receiving hospital"}
-                </h1>
-              </div>
-              <nav className="hidden gap-1 sm:flex" aria-label="Screens">
-                <Link
-                  href="/ems"
-                  className={`rounded px-2.5 py-1 text-xs font-medium ${
-                    role === "EMS"
-                      ? "bg-zinc-800 text-teal-300"
-                      : "text-zinc-500 hover:text-zinc-300"
-                  }`}
-                >
-                  EMS
-                </Link>
-                <Link
-                  href="/hospital"
-                  className={`rounded px-2.5 py-1 text-xs font-medium ${
-                    role === "Hospital"
-                      ? "bg-zinc-800 text-teal-300"
-                      : "text-zinc-500 hover:text-zinc-300"
-                  }`}
-                >
-                  Hospital
-                </Link>
-              </nav>
+    <div className="min-h-screen bg-[#0c1117] text-zinc-100">
+      <header className="border-b border-zinc-800/80 px-6 py-4">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4">
+          <div className="flex min-w-0 items-center gap-6">
+            <div>
+              <Link
+                href="/"
+                className="text-[11px] font-semibold uppercase tracking-[0.2em] text-teal-400/90 hover:text-teal-300"
+              >
+                TraumaLink
+              </Link>
+              <h1 className="mt-0.5 text-lg font-semibold tracking-tight text-zinc-50">
+                {role === "EMS" ? "EMS handoff" : "Receiving hospital"}
+              </h1>
             </div>
-            <ConnectionStatus />
+            <nav className="hidden gap-1 sm:flex" aria-label="Screens">
+              <Link
+                href="/ems"
+                className={`rounded px-2.5 py-1 text-xs font-medium ${
+                  role === "EMS"
+                    ? "bg-zinc-800 text-teal-300"
+                    : "text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                EMS
+              </Link>
+              <Link
+                href="/hospital"
+                className={`rounded px-2.5 py-1 text-xs font-medium ${
+                  role === "Hospital"
+                    ? "bg-zinc-800 text-teal-300"
+                    : "text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                Hospital
+              </Link>
+            </nav>
           </div>
-        </header>
-        <main className="mx-auto max-w-6xl px-6 py-8">
-          <AuthGate>{children}</AuthGate>
-        </main>
-      </div>
-    </TraumaLinkProviders>
+          <ConnectionStatus />
+        </div>
+      </header>
+      <main className="mx-auto max-w-6xl px-6 py-8">
+        <AuthGate>{children}</AuthGate>
+      </main>
+    </div>
   );
 }

@@ -2,7 +2,7 @@
 
 import { AppChrome } from "@/components/Providers";
 import { CaseChannel, HOSPITAL_QUICK_PHRASES } from "@/components/CaseChannel";
-import { EtaCountdown, useNow } from "@/components/EtaCountdown";
+import { EtaCountdown, NowProvider, useSharedNow } from "@/components/EtaCountdown";
 import { TraumaCardFields } from "@/components/TraumaCardFields";
 import {
   acceptHandoff,
@@ -162,7 +162,6 @@ function CaseDetail({
   onBridge,
   onDecline,
   onSendChannel,
-  now,
 }: {
   handoff: ActiveHandoff;
   accepted?: boolean;
@@ -180,8 +179,8 @@ function CaseDetail({
   onBridge: () => void;
   onDecline: () => void;
   onSendChannel: () => void;
-  now: number;
 }) {
+  const now = useSharedNow();
   const { card } = handoff;
   const suggestions = getSuggestedAsks(card);
   const triage = getTraumaTriageAssessment(card);
@@ -370,10 +369,129 @@ function CaseDetail({
   );
 }
 
+function HospitalQueue({
+  handoffs,
+  accepted,
+  selectedId,
+  dirtyIds,
+  queueFilter,
+  onFilter,
+  onSelect,
+}: {
+  handoffs: ActiveHandoff[];
+  accepted: ActiveHandoff | null;
+  selectedId: string | null;
+  dirtyIds: Set<string>;
+  queueFilter: "all" | "incoming" | "confirmed";
+  onFilter: (filter: "all" | "incoming" | "confirmed") => void;
+  onSelect: (id: string) => void;
+}) {
+  const now = useSharedNow();
+  const sorted = useMemo(() => sortHandoffs(handoffs, now), [handoffs, now]);
+  const filteredQueue = useMemo(() => {
+    if (queueFilter === "all") return sorted;
+    return sorted.filter((h) => h.handoffStatus === queueFilter);
+  }, [sorted, queueFilter]);
+
+  return (
+    <aside>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
+          Case queue
+        </p>
+        <span className="font-mono text-[10px] text-zinc-500">
+          {sorted.length} total
+        </span>
+      </div>
+      <div className="mt-2 flex gap-1 rounded bg-zinc-950 p-0.5 text-[10px]">
+        {(["all", "incoming", "confirmed"] as const).map((filter) => (
+          <button
+            key={filter}
+            type="button"
+            onClick={() => onFilter(filter)}
+            className={`flex-1 rounded py-1 font-medium capitalize transition ${
+              queueFilter === filter
+                ? "bg-zinc-800 text-teal-300 shadow-sm"
+                : "text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            {filter}
+          </button>
+        ))}
+      </div>
+      <ul className="mt-3 space-y-1">
+        {filteredQueue.length === 0 && !accepted ? (
+          <li className="rounded-md border border-dashed border-zinc-800 px-3 py-6 text-center text-xs text-zinc-600">
+            No cases match filter
+          </li>
+        ) : (
+          filteredQueue.map((h) => {
+            const active = selectedId === h.id;
+            const dirty = dirtyIds.has(h.id) && !active;
+            const bp = flagBp(h.card.vitals.bpSystolic);
+            const hr = flagHr(h.card.vitals.heartRate);
+            return (
+              <li key={h.id}>
+                <button
+                  type="button"
+                  onClick={() => onSelect(h.id)}
+                  className={`w-full rounded-md border px-3 py-2 text-left text-sm transition ${
+                    active
+                      ? "border-teal-600/60 bg-teal-950/30 ring-1 ring-teal-700/40"
+                      : "border-zinc-800 bg-zinc-900/40 hover:border-zinc-700"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-[10px] text-zinc-500">
+                      {caseShortId(h)}
+                      {dirty && (
+                        <span className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-400" />
+                      )}
+                    </span>
+                    <StatusBadge status={h.handoffStatus} />
+                  </div>
+                  <p className="mt-1 truncate text-zinc-200">{caseTitle(h)}</p>
+                  <p className="mt-0.5 font-mono text-[10px] text-zinc-500">
+                    <EtaCountdown card={h.card} compact now={now} />
+                    {bp ? ` · BP ${bp}` : ""}
+                    {hr ? ` · HR ${hr}` : ""}
+                  </p>
+                </button>
+              </li>
+            );
+          })
+        )}
+        {accepted && !sorted.some((h) => h.id === accepted.id) && (
+          <li>
+            <button
+              type="button"
+              onClick={() => onSelect(accepted.id)}
+              className={`w-full rounded-md border px-3 py-2 text-left text-sm ${
+                selectedId === accepted.id
+                  ? "border-teal-600/60 bg-teal-950/30"
+                  : "border-zinc-800 bg-zinc-900/40"
+              }`}
+            >
+              <span className="text-[10px] font-semibold uppercase text-teal-400">
+                Accepted
+              </span>
+              <p className="mt-1 truncate text-zinc-200">
+                {patientLine(accepted.card)}
+              </p>
+            </button>
+          </li>
+        )}
+      </ul>
+    </aside>
+  );
+}
+
 export default function HospitalPage() {
   return (
     <AppChrome role="Hospital">
-      <HospitalContent />
+      <NowProvider>
+        <HospitalContent />
+      </NowProvider>
     </AppChrome>
   );
 }
@@ -400,17 +518,10 @@ function HospitalContent() {
   const handoffsRef = useRef(handoffs);
   const focusEncounterRef = useRef<string | undefined>(undefined);
 
-  const now = useNow(true);
-  const sorted = useMemo(() => sortHandoffs(handoffs, now), [handoffs, now]);
-  const filteredQueue = useMemo(() => {
-    if (queueFilter === "all") return sorted;
-    return sorted.filter((h) => h.handoffStatus === queueFilter);
-  }, [sorted, queueFilter]);
-
   const selected =
-    sorted.find((h) => h.id === selectedId) ??
+    handoffs.find((h) => h.id === selectedId) ??
     (accepted?.id === selectedId ? accepted : null) ??
-    sorted[0] ??
+    handoffs[0] ??
     accepted;
 
   useEffect(() => {
@@ -688,99 +799,19 @@ function HospitalContent() {
   const showingAccepted =
     accepted &&
     selected?.id === accepted.id &&
-    !sorted.some((h) => h.id === accepted.id);
+    !handoffs.some((h) => h.id === accepted.id);
 
   return (
     <div className="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
-      <aside>
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-            Case queue
-          </p>
-          <span className="font-mono text-[10px] text-zinc-500">
-            {sorted.length} total
-          </span>
-        </div>
-        <div className="mt-2 flex gap-1 rounded bg-zinc-950 p-0.5 text-[10px]">
-          {(["all", "incoming", "confirmed"] as const).map((filter) => (
-            <button
-              key={filter}
-              type="button"
-              onClick={() => setQueueFilter(filter)}
-              className={`flex-1 rounded py-1 font-medium capitalize transition ${
-                queueFilter === filter
-                  ? "bg-zinc-800 text-teal-300 shadow-sm"
-                  : "text-zinc-500 hover:text-zinc-300"
-              }`}
-            >
-              {filter}
-            </button>
-          ))}
-        </div>
-        <ul className="mt-3 space-y-1">
-          {filteredQueue.length === 0 && !accepted ? (
-            <li className="rounded-md border border-dashed border-zinc-800 px-3 py-6 text-center text-xs text-zinc-600">
-              No cases match filter
-            </li>
-          ) : (
-            filteredQueue.map((h) => {
-              const active = selected?.id === h.id;
-              const dirty = dirtyIds.has(h.id) && !active;
-              const bp = flagBp(h.card.vitals.bpSystolic);
-              const hr = flagHr(h.card.vitals.heartRate);
-              return (
-                <li key={h.id}>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedId(h.id)}
-                    className={`w-full rounded-md border px-3 py-2 text-left text-sm transition ${
-                      active
-                        ? "border-teal-600/60 bg-teal-950/30 ring-1 ring-teal-700/40"
-                        : "border-zinc-800 bg-zinc-900/40 hover:border-zinc-700"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-mono text-[10px] text-zinc-500">
-                        {caseShortId(h)}
-                        {dirty && (
-                          <span className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-400" />
-                        )}
-                      </span>
-                      <StatusBadge status={h.handoffStatus} />
-                    </div>
-                    <p className="mt-1 truncate text-zinc-200">{caseTitle(h)}</p>
-                    <p className="mt-0.5 font-mono text-[10px] text-zinc-500">
-                      <EtaCountdown card={h.card} compact now={now} />
-                      {bp ? ` · BP ${bp}` : ""}
-                      {hr ? ` · HR ${hr}` : ""}
-                    </p>
-                  </button>
-                </li>
-              );
-            })
-          )}
-          {accepted && !sorted.some((h) => h.id === accepted.id) && (
-            <li>
-              <button
-                type="button"
-                onClick={() => setSelectedId(accepted.id)}
-                className={`w-full rounded-md border px-3 py-2 text-left text-sm ${
-                  selected?.id === accepted.id
-                    ? "border-teal-600/60 bg-teal-950/30"
-                    : "border-zinc-800 bg-zinc-900/40"
-                }`}
-              >
-                <span className="text-[10px] font-semibold uppercase text-teal-400">
-                  Accepted
-                </span>
-                <p className="mt-1 truncate text-zinc-200">
-                  {patientLine(accepted.card)}
-                </p>
-              </button>
-            </li>
-          )}
-        </ul>
-      </aside>
+      <HospitalQueue
+        handoffs={handoffs}
+        accepted={accepted}
+        selectedId={selected?.id ?? selectedId}
+        dirtyIds={dirtyIds}
+        queueFilter={queueFilter}
+        onFilter={setQueueFilter}
+        onSelect={setSelectedId}
+      />
 
       <div>
         {!selected ? (
@@ -810,7 +841,6 @@ function HospitalContent() {
             onBridge={() => void onBridge(selected)}
             onDecline={() => void onDecline(selected)}
             onSendChannel={() => void onSendChannel(selected)}
-            now={now}
           />
         )}
 
