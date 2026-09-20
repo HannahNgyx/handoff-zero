@@ -454,6 +454,8 @@ export function applyHandoffText(card: TraumaCard, text: string): TraumaCard {
   const gcs = lower.match(/gcs\s*(?:of\s*)?(\d{1,2})/);
   if (gcs) next.vitals.gcs = Number(gcs[1]);
 
+  // Specific injuries before the generic "fracture" fallback, otherwise
+  // "unstable pelvic fracture" becomes "Suspected traumatic injury".
   if (/femur/.test(lower)) {
     const side = /\bright\b/.test(lower)
       ? "right"
@@ -463,7 +465,17 @@ export function applyHandoffText(card: TraumaCard, text: string): TraumaCard {
     next.injury = side
       ? `Suspected ${side} femur fracture`
       : "Suspected femur fracture";
-  } else if (/fracture|injury/.test(lower) && !next.injury) {
+  } else if (/pelvic\s+fracture|fractured?\s+pelvis|\bpelvis\s+fracture/.test(lower)) {
+    next.injury = /unstable/.test(lower)
+      ? "Suspected unstable pelvic fracture"
+      : "Suspected pelvic fracture";
+  } else if (/scalp/.test(lower)) {
+    next.injury = /laceration/.test(lower)
+      ? "Scalp laceration"
+      : "Scalp injury";
+  } else if (/\blaceration\b/.test(lower)) {
+    next.injury = "Laceration";
+  } else if (/fracture/.test(lower) && !next.injury) {
     next.injury = "Suspected traumatic injury";
   }
 
