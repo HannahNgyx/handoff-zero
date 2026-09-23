@@ -450,15 +450,12 @@ function EmsContent() {
   async function onSendChannel() {
     const handoff = activeCase;
     if (!handoff) return;
-    setBusy(true);
     try {
       await postChannelMessage(medplum, handoff, "ems", channelDraft);
       setChannelDraft("");
       await refreshChannel(handoff.encounterId);
     } catch (err) {
       setStatus(err instanceof Error ? err.message : "Send failed");
-    } finally {
-      setBusy(false);
     }
   }
 
@@ -650,9 +647,8 @@ function EmsContent() {
             emptyLabel="No messages for this case."
             draft={channelDraft}
             onDraftChange={setChannelDraft}
-            onSend={() => void onSendChannel()}
+            onSend={() => onSendChannel()}
             placeholder="Message hospital…"
-            busy={busy}
             disabled={!activeCase}
             quickPhrases={EMS_QUICK_PHRASES}
             listClassName="max-h-32"
