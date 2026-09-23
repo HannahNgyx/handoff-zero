@@ -1,7 +1,7 @@
 "use client";
 
 import type { ChannelEntry } from "@/lib/fhir/handoff";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 export const EMS_QUICK_PHRASES = [
   "ETA 4 mins",
@@ -26,7 +26,6 @@ export function CaseChannel({
   onDraftChange,
   onSend,
   placeholder,
-  busy,
   disabled,
   quickPhrases,
   actions,
@@ -37,14 +36,25 @@ export function CaseChannel({
   caption?: string;
   draft: string;
   onDraftChange: (value: string) => void;
-  onSend: () => void;
+  onSend: () => void | Promise<void>;
   placeholder: string;
-  busy: boolean;
   disabled?: boolean;
   quickPhrases: readonly string[];
   actions?: ReactNode;
   listClassName?: string;
 }) {
+  const [sending, setSending] = useState(false);
+
+  async function send() {
+    if (sending || disabled || !draft.trim()) return;
+    setSending(true);
+    try {
+      await onSend();
+    } finally {
+      setSending(false);
+    }
+  }
+
   return (
     <>
       <p className="text-[11px] font-semibold uppercase tracking-[0.15em] text-zinc-500">
@@ -80,11 +90,11 @@ export function CaseChannel({
         />
         <button
           type="button"
-          disabled={busy || disabled || !draft.trim()}
-          onClick={onSend}
+          disabled={sending || disabled || !draft.trim()}
+          onClick={() => void send()}
           className="rounded-md border border-zinc-600 px-3 py-1.5 text-sm text-zinc-200 disabled:opacity-50"
         >
-          Send
+          {sending ? "Sending…" : "Send"}
         </button>
         {actions}
       </div>
@@ -94,7 +104,7 @@ export function CaseChannel({
             <button
               key={quick}
               type="button"
-              disabled={busy}
+              disabled={sending}
               onClick={() => onDraftChange(quick)}
               className="rounded border border-zinc-800 bg-zinc-950/60 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
             >

@@ -178,7 +178,7 @@ function CaseDetail({
   onCancelPicker: () => void;
   onBridge: () => void;
   onDecline: () => void;
-  onSendChannel: () => void;
+  onSendChannel: () => Promise<void>;
 }) {
   const now = useSharedNow();
   const { card } = handoff;
@@ -361,7 +361,6 @@ function CaseDetail({
           onDraftChange={onChannelDraft}
           onSend={onSendChannel}
           placeholder="Message EMS…"
-          busy={busy}
           quickPhrases={HOSPITAL_QUICK_PHRASES}
         />
       </div>
@@ -766,15 +765,12 @@ function HospitalContent() {
   }
 
   async function onSendChannel(handoff: ActiveHandoff) {
-    setBusy(true);
     try {
       await postChannelMessage(medplum, handoff, "hospital", channelDraft);
       setChannelDraft("");
       await refreshChannel(handoff.encounterId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Send failed");
-    } finally {
-      setBusy(false);
     }
   }
 
@@ -840,7 +836,7 @@ function HospitalContent() {
             onCancelPicker={() => setShowPicker(false)}
             onBridge={() => void onBridge(selected)}
             onDecline={() => void onDecline(selected)}
-            onSendChannel={() => void onSendChannel(selected)}
+            onSendChannel={() => onSendChannel(selected)}
           />
         )}
 
