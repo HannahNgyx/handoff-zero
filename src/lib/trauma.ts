@@ -413,7 +413,6 @@ export function applyHandoffText(card: TraumaCard, text: string): TraumaCard {
   const next: TraumaCard = {
     ...card,
     vitals: { ...card.vitals },
-    etaCapturedAt: card.etaCapturedAt ?? new Date().toISOString(),
   };
 
   const ageSex = lower.match(
@@ -522,7 +521,10 @@ export function applyHandoffText(card: TraumaCard, text: string): TraumaCard {
   }
 
   const etaMinutes = parseEtaMinutes(lower);
-  if (etaMinutes != null) next.etaMinutes = etaMinutes;
+  if (etaMinutes != null) {
+    next.etaMinutes = etaMinutes;
+    next.etaCapturedAt = new Date().toISOString();
+  }
 
   const oral = lower.match(
     /(?:last\s*(?:ate|drank|oral\s*intake)|ate|drank)\s*(?:around\s*|at\s*)?(.+?)(?:\.|$)/,

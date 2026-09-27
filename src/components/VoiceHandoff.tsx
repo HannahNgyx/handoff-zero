@@ -92,7 +92,8 @@ export function applyTraumaArgs(card: TraumaCard, raw: TraumaArgs): TraumaCard {
       ? mergeInterventions(card.interventions, raw.interventions)
       : card.interventions,
     etaMinutes: raw.etaMinutes ?? card.etaMinutes,
-    etaCapturedAt: card.etaCapturedAt ?? new Date().toISOString(),
+    etaCapturedAt:
+      raw.etaMinutes != null ? new Date().toISOString() : card.etaCapturedAt,
   };
 }
 
@@ -426,7 +427,6 @@ export function VoiceHandoff({
       const next: TraumaCard = {
         ...cardRef.current,
         [fieldKey]: value,
-        etaCapturedAt: cardRef.current.etaCapturedAt ?? new Date().toISOString(),
       };
       cardRef.current = next;
       onCardChangeRef.current(next);
