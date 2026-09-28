@@ -526,8 +526,8 @@ export function applyHandoffText(card: TraumaCard, text: string): TraumaCard {
     next.etaCapturedAt = new Date().toISOString();
   }
 
-  const oral = lower.match(
-    /(?:last\s*(?:ate|drank|oral\s*intake)|ate|drank)\s*(?:around\s*|at\s*)?(.+?)(?:\.|$)/,
+  const oral = t.match(
+    /(?:last\s+(?:oral\s+intake|ate|drank)|\bate\b|\bdrank\b)\s*(?:around\s+|at\s+)?(.+?)(?:\.|$)/i,
   );
   if (oral?.[1]) next.lastOralIntake = oral[1].trim().slice(0, 80);
 
